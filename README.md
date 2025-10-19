@@ -42,7 +42,8 @@ Run the installer as root:
 
 bash
 sudo ./install-python-template.sh
-Method 2: Manual Installation
+
+# Method 2: Manual Installation
 If you prefer manual installation, you can copy the files directly:
 
 bash
