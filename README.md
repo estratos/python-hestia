@@ -32,13 +32,16 @@ Python 3.8+ installed on the system
 # Method 1: Automated Installation
 Download the installer script:
 
-bash
+```console
 wget https://raw.githubusercontent.com/estratos/python-hestia/main/install-python-template.sh
+```
 Make it executable:
 
-bash
+```bash
 chmod +x install-python-template.sh
+```
 Run the installer as root:
+
 
 bash
 sudo ./install-python-template.sh
