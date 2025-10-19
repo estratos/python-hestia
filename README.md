@@ -28,8 +28,8 @@ Root access or sudo privileges
 
 Python 3.8+ installed on the system
 
-🛠 Installation
-Method 1: Automated Installation
+# 🛠 Installation
+# Method 1: Automated Installation
 Download the installer script:
 
 bash
