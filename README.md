@@ -33,7 +33,7 @@ Python 3.8+ installed on the system
 Download the installer script:
 
 bash
-wget https://raw.githubusercontent.com/estratos/hestia-python-template/main/install-python-template.sh
+wget https://raw.githubusercontent.com/estratos/python-hestia/main/install-python-template.sh
 Make it executable:
 
 bash
