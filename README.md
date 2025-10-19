@@ -1,5 +1,5 @@
 # python-hestia
-Hestia CP Python Application Template
+# Hestia CP Python Application Template
 A complete solution to run Python web applications on Hestia Control Panel. This package provides a custom template and CLI tool to easily deploy Python/Flask applications with proper virtual environments, systemd services, and Nginx configuration.
 
 🚀 Features
