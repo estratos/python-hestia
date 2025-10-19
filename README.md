@@ -43,45 +43,64 @@ chmod +x install-python-template.sh
 Run the installer as root:
 
 
-bash
+```bash
 sudo ./install-python-template.sh
+```
 
 # Method 2: Manual Installation
 If you prefer manual installation, you can copy the files directly:
 
 bash
-# Copy template to Hestia templates directory
+### Copy template to Hestia templates directory
+```
 sudo cp python-app.tpl /usr/local/hestia/data/templates/web/nginx/
+```
 
-# Copy setup script
+### Copy setup script
+```
 sudo cp hestia-python-setup.sh /usr/local/hestia/scripts/
+```
+```
 sudo chmod +x /usr/local/hestia/scripts/hestia-python-setup.sh
+```
 
-# Create symbolic link
+### Create symbolic link
+```
 sudo ln -s /usr/local/hestia/scripts/hestia-python-setup.sh /usr/local/bin/hestia-python-setup
+```
 📖 Usage
 Basic Usage
 First, create a domain in Hestia CP (if you haven't already):
 
-bash
+```bash
 v-add-web-domain admin example.com
+```
 Set up Python application for the domain:
 
-bash
+```bash
 hestia-python-setup example.com
+```
 Advanced Options
 bash
-# Custom port
+### Custom port
+```
 hestia-python-setup example.com --port 8000
+```
 
-# Specific Python version
+### Specific Python version
+```
 hestia-python-setup example.com --python-version 3.11
+```
 
-# Force recreation (if app already exists)
+### Force recreation (if app already exists)
+```
 hestia-python-setup example.com --force
+```
 
-# Combine options
+### Combine options
+```
 hestia-python-setup example.com --port 3000 --python-version 3.10
+```
 Command Reference
 bash
 Usage: hestia-python-setup DOMAIN [OPTIONS]
@@ -123,33 +142,50 @@ Virtual Environment: Isolated Python environment
 🔧 Managing Your Application
 Application Commands
 bash
-# Restart application
+### Restart application
+```
 sudo systemctl restart example.com_python.service
+```
 
-# Check status
+### Check status
+```
 sudo systemctl status example.com_python.service
+```
 
-# View logs
+### View logs
+```
 sudo journalctl -u example.com_python.service -f
+```
 
-# Stop application
+### Stop application
+```
 sudo systemctl stop example.com_python.service
+```
 
-# Enable auto-start on boot
+### Enable auto-start on boot
+```
 sudo systemctl enable example.com_python.service
+```
 Python Environment Management
 bash
-# Activate virtual environment
+### Activate virtual environment
+```
 source /home/admin/web/example.com/.python-venv/bin/activate
+```
 
-# Install packages
+### Install packages
+```
 /home/admin/web/example.com/.python-venv/bin/pip install package-name
+```
 
-# Install from requirements.txt
+### Install from requirements.txt
+```
 /home/admin/web/example.com/.python-venv/bin/pip install -r /home/admin/web/example.com/private/python_app/requirements.txt
-
-# Update pip
+```
+## Update pip
+```
 /home/admin/web/example.com/.python-venv/bin/pip install --upgrade pip
+```
 File Locations
 Component	Location
 Application Code	/home/admin/web/example.com/private/python_app/
@@ -162,16 +198,21 @@ Nginx Config	/home/admin/conf/web/example.com/nginx.conf
 Replace the default application with your own:
 
 bash
-# Upload your files to:
+### Upload your files to:
+```
 /home/admin/web/example.com/private/python_app/
+```
 
-# Your main application should be named:
+### Your main application should be named:
+
 app.py  # or modify wsgi.py to import your app
 2. Update Dependencies
 Edit the requirements.txt file:
 
 bash
+```
 nano /home/admin/web/example.com/private/python_app/requirements.txt
+```
 Example:
 
 txt
@@ -181,14 +222,20 @@ requests==2.31.0
 python-dotenv==1.0.0
 3. Install Dependencies
 bash
-# Manual installation
+### Manual installation
+```
 /home/admin/web/example.com/.python-venv/bin/pip install -r /home/admin/web/example.com/private/python_app/requirements.txt
+```
 
-# Or let the system handle it on restart
+### Or let the system handle it on restart
+```
 sudo systemctl restart example.com_python.service
+```
 4. Restart Application
 bash
+```
 sudo systemctl restart example.com_python.service
+```
 🔄 Example Application Structure
 Here's a complete example of a Flask application:
 
