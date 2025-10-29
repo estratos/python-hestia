@@ -1,405 +1,164 @@
 #!/bin/bash
 
-# Hestia CP Python Template Installer 
-# Script para instalar el template de Python en HESTIA CP incluyendo proxy template
+# HestiaCP Python Template Installation Script - Complete Version
+# Includes both .tpl and .stpl files
 
-# Colores para output
+set -e
+
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Configuración
-HESTIA_TEMPLATES_DIR="/usr/local/hestia/data/templates/web/nginx"
-HESTIA_PROXY_TEMPLATES_DIR="/usr/local/hestia/data/templates/web/nginx/proxy"
-HESTIA_SCRIPTS_DIR="/usr/local/hestia/scripts"
-TEMPLATE_NAME="python-app"
-PROXY_TEMPLATE_NAME="python-app"
-SCRIPT_NAME="hestia-python-setup"
-BACKUP_DIR="/tmp/hestia-python-backup"
-
-# Función para mostrar mensajes de error
-error() {
-    echo -e "${RED}[ERROR]${NC} $1" >&2
+log() {
+    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $1"
 }
 
-# Función para mostrar mensajes de éxito
-success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-# Función para mostrar información
 info() {
     echo -e "${BLUE}[INFO]${NC} $1"
 }
 
-# Función para mostrar advertencias
 warning() {
     echo -e "${YELLOW}[WARNING]${NC} $1"
 }
 
-# Función para verificar si se está ejecutando como root
-check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        error "Este script debe ejecutarse como root"
-        exit 1
+error() {
+    echo -e "${RED}[ERROR]${NC} $1" >&2
+}
+
+# Check if running as root
+if [ "$EUID" -ne 0 ]; then
+    error "Please run as root"
+    exit 1
+fi
+
+# Directories
+HESTIA_TEMPLATES="/usr/local/hestia/data/templates/web"
+NGINX_DIR="$HESTIA_TEMPLATES/nginx"
+APACHE_DIR="$HESTIA_TEMPLATES/apache2"
+PROXY_DIR="$NGINX_DIR"  # .stpl files go in the same directory as .tpl files
+SCRIPTS_DIR="/usr/local/hestia/scripts"
+
+# Create directories if they don't exist
+mkdir -p "$NGINX_DIR" "$APACHE_DIR" "$SCRIPTS_DIR"
+
+# Backup existing templates
+backup_templates() {
+    local timestamp=$(date +%Y%m%d_%H%M%S)
+    local backup_dir="/tmp/hestia_python_backup_$timestamp"
+    
+    mkdir -p "$backup_dir"
+    
+    if [ -f "$NGINX_DIR/python-app.tpl" ]; then
+        cp "$NGINX_DIR/python-app.tpl" "$backup_dir/"
+        info "Backed up existing python-app.tpl"
+    fi
+    
+    if [ -f "$NGINX_DIR/python-app.stpl" ]; then
+        cp "$NGINX_DIR/python-app.stpl" "$backup_dir/"
+        info "Backed up existing python-app.stpl"
+    fi
+    
+    if [ -f "$APACHE_DIR/python-app.tpl" ]; then
+        cp "$APACHE_DIR/python-app.tpl" "$backup_dir/"
+        info "Backed up existing apache python-app.tpl"
+    fi
+    
+    if [ -d "$backup_dir" ] && [ "$(ls -A "$backup_dir")" ]; then
+        info "Backups saved to: $backup_dir"
+    else
+        rm -rf "$backup_dir"
     fi
 }
 
-# Función para verificar la instalación de Hestia
-check_hestia() {
-    if [[ ! -d "/usr/local/hestia" ]]; then
-        error "Hestia CP no está instalado en /usr/local/hestia"
-        exit 1
-    fi
+# Install Nginx template (.tpl)
+install_nginx_template() {
+    log "Installing Nginx template (python-app.tpl)..."
     
-    if [[ ! -d "$HESTIA_TEMPLATES_DIR" ]]; then
-        error "No se encuentra el directorio de templates de Hestia: $HESTIA_TEMPLATES_DIR"
-        exit 1
-    fi
+    cat > "$NGINX_DIR/python-app.tpl" << 'NGINXTPL'
+server {
+    listen      %ip%:%web_port%;
+    server_name %domain_idn% %alias_idn%;
+    root        %docroot%;
+    index       index.html index.htm;
+    
+    # Access and error logs
+    access_log  /home/%user%/web/%domain%/logs/nginx_access.log;
+    error_log   /home/%user%/web/%domain%/logs/nginx_error.log;
+
+    # Static files
+    location /static/ {
+        alias /home/%user%/web/%domain%/private/python_app/static/;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+        access_log off;
+    }
+
+    # Media files
+    location /media/ {
+        alias /home/%user%/web/%domain%/private/python_app/media/;
+        expires 30d;
+        access_log off;
+    }
+
+    # Main application proxy
+    location / {
+        proxy_pass http://127.0.0.1:%web_ssl_port%;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+        
+        # Security headers
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header X-Content-Type-Options "nosniff" always;
+    }
+
+    # Health check endpoint
+    location /health {
+        proxy_pass http://127.0.0.1:%web_ssl_port%/health;
+        proxy_set_header Host $host;
+        access_log off;
+    }
+
+    # Deny access to sensitive files
+    location ~ /(\.git|\.env|venv|__pycache__) {
+        deny all;
+        return 404;
+    }
+
+    # Include SSL configuration
+    include %home%/%user%/conf/web/%domain%/nginx.ssl.conf*;
 }
 
-# Función para crear backup de templates existentes
-create_backup() {
-    local backup_timestamp=$(date +%Y%m%d_%H%M%S)
-    BACKUP_DIR="${BACKUP_DIR}_${backup_timestamp}"
-    
-    info "Creando backup en: $BACKUP_DIR"
-    mkdir -p "$BACKUP_DIR"
-    
-    # Backup del template web si existe
-    if [[ -f "$HESTIA_TEMPLATES_DIR/$TEMPLATE_NAME.tpl" ]]; then
-        cp "$HESTIA_TEMPLATES_DIR/$TEMPLATE_NAME.tpl" "$BACKUP_DIR/"
-        success "Backup del template web creado"
-    fi
-    
-    # Backup del template proxy si existe
-    if [[ -f "$HESTIA_PROXY_TEMPLATES_DIR/$PROXY_TEMPLATE_NAME.tpl" ]]; then
-        cp "$HESTIA_PROXY_TEMPLATES_DIR/$PROXY_TEMPLATE_NAME.tpl" "$BACKUP_DIR/"
-        success "Backup del template proxy creado"
-    fi
-    
-    # Backup del script si existe
-    if [[ -f "$HESTIA_SCRIPTS_DIR/$SCRIPT_NAME.sh" ]]; then
-        cp "$HESTIA_SCRIPTS_DIR/$SCRIPT_NAME.sh" "$BACKUP_DIR/"
-        success "Backup del script creado"
-    fi
+# HTTP to HTTPS redirect
+server {
+    listen      %ip%:80;
+    server_name %domain_idn% %alias_idn%;
+    return      301 https://%domain_idn%$request_uri;
+}
+NGINXTPL
+
+    chmod 644 "$NGINX_DIR/python-app.tpl"
+    log "Nginx template installed successfully"
 }
 
-# Función para crear el template web de Python
-create_python_web_template() {
-    info "Creando template web de Python..."
+# Install Proxy template (.stpl)
+install_proxy_template() {
+    log "Installing Proxy template (python-app.stpl)..."
     
-    cat > "$HESTIA_TEMPLATES_DIR/$TEMPLATE_NAME.tpl" << 'EOF'
-#!/bin/bash
+    cat > "$NGINX_DIR/python-app.stpl" << 'PROXYSTPL'
+# Python Application Proxy Configuration
+# HestiaCP Proxy Template - .stpl file
 
-# Hestia CP Python Application Template
-# Template: python-app
-# Description: Template for Python web applications with Flask/Gunicorn
-
-# Variables del template
-WEB_TEMPLATE='python-app'
-WEB_BACKEND='python'
-WEB_PYTHON_VERSION='3.9'
-WEB_PORT='5000'
-
-# Configuración inicial
-user='$USER'
-domain='$DOMAIN'
-ip='$IP'
-home_dir='$HOMEDIR'
-public_html='$PUBLIC_HTML'
-
-# Crear estructura de directorios
-mkdir -p $home_dir/web/$domain/private/python_app
-mkdir -p $home_dir/web/$domain/private/python_app/static
-mkdir -p $home_dir/web/$domain/private/python_app/templates
-mkdir -p $home_dir/web/$domain/logs/python
-mkdir -p $home_dir/web/$domain/.python-venv
-
-# Crear virtual environment
-echo "Creating Python virtual environment..."
-python3 -m venv $home_dir/web/$domain/.python-venv
-
-# Crear archivo de configuración básico para la app Python
-cat > $home_dir/web/$domain/private/python_app/app.py << 'PYEOF'
-from flask import Flask, render_template
-import os
-import datetime
-
-app = Flask(__name__)
-
-@app.route('/')
-def hello():
-    return render_template('index.html', 
-                         domain=os.environ.get('DOMAIN', 'localhost'),
-                         time=datetime.datetime.now())
-
-@app.route('/health')
-def health():
-    return {'status': 'healthy', 'timestamp': datetime.datetime.now().isoformat()}
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
-PYEOF
-
-# Crear template HTML básico
-mkdir -p $home_dir/web/$domain/private/python_app/templates
-cat > $home_dir/web/$domain/private/python_app/templates/index.html << 'HTMLEOF'
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Python App - {{ domain }}</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .container { 
-            background: white; 
-            padding: 3rem; 
-            border-radius: 15px;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-            text-align: center;
-            max-width: 600px;
-            width: 90%;
-        }
-        .logo { 
-            font-size: 4rem; 
-            margin-bottom: 1rem; 
-        }
-        h1 { 
-            color: #333; 
-            margin-bottom: 1rem;
-            font-size: 2.2rem;
-        }
-        .subtitle {
-            color: #666;
-            font-size: 1.2rem;
-            margin-bottom: 2rem;
-        }
-        .info-box {
-            background: #f8f9fa;
-            padding: 1.5rem;
-            border-radius: 8px;
-            border-left: 4px solid #667eea;
-            text-align: left;
-            margin: 2rem 0;
-        }
-        .info-box h3 {
-            color: #333;
-            margin-bottom: 1rem;
-        }
-        .info-box ul {
-            list-style: none;
-            padding: 0;
-        }
-        .info-box li {
-            padding: 0.3rem 0;
-            color: #555;
-        }
-        .info-box strong {
-            color: #333;
-        }
-        .next-steps {
-            text-align: left;
-            background: #e7f3ff;
-            padding: 1.5rem;
-            border-radius: 8px;
-            border-left: 4px solid #2196F3;
-        }
-        .next-steps h3 {
-            color: #1565C0;
-            margin-bottom: 1rem;
-        }
-        .next-steps ol {
-            padding-left: 1.5rem;
-        }
-        .next-steps li {
-            margin-bottom: 0.5rem;
-            color: #555;
-        }
-        .status {
-            display: inline-block;
-            background: #4CAF50;
-            color: white;
-            padding: 0.5rem 1rem;
-            border-radius: 20px;
-            font-weight: bold;
-            margin-top: 1rem;
-        }
-        code {
-            background: #2d2d2d;
-            color: #f8f8f2;
-            padding: 0.2rem 0.4rem;
-            border-radius: 3px;
-            font-family: 'Courier New', monospace;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="logo">🐍</div>
-        <h1>Python Application Ready!</h1>
-        <p class="subtitle">Your Python application is successfully deployed on <strong>{{ domain }}</strong></p>
-        
-        <div class="status">🚀 Application Running</div>
-        
-        <div class="info-box">
-            <h3>📋 Application Information</h3>
-            <ul>
-                <li><strong>Domain:</strong> {{ domain }}</li>
-                <li><strong>User:</strong> $user</li>
-                <li><strong>App Directory:</strong> <code>$home_dir/web/$domain/private/python_app</code></li>
-                <li><strong>Virtual Environment:</strong> <code>$home_dir/web/$domain/.python-venv</code></li>
-                <li><strong>Python Version:</strong> $WEB_PYTHON_VERSION</li>
-                <li><strong>Application Port:</strong> $WEB_PORT</li>
-                <li><strong>Server Time:</strong> {{ time.strftime('%Y-%m-%d %H:%M:%S') }}</li>
-            </ul>
-        </div>
-        
-        <div class="next-steps">
-            <h3>🎯 Next Steps</h3>
-            <ol>
-                <li>Upload your Python application files to <code>private/python_app/</code></li>
-                <li>Install dependencies: <code>source .python-venv/bin/activate && pip install -r requirements.txt</code></li>
-                <li>Configure your WSGI application in <code>app.py</code></li>
-                <li>Restart the service when you make changes: <code>systemctl restart ${domain}_python.service</code></li>
-                <li>Check application logs: <code>journalctl -u ${domain}_python.service -f</code></li>
-            </ol>
-        </div>
-        
-        <p style="margin-top: 2rem; color: #666; font-size: 0.9rem;">
-            <em>This is a default template. Replace this content with your actual Python application.</em>
-        </p>
-    </div>
-</body>
-</html>
-HTMLEOF
-
-# Crear requirements.txt
-cat > $home_dir/web/$domain/private/python_app/requirements.txt << 'REQEOF'
-Flask==2.3.3
-gunicorn==21.2.0
-REQEOF
-
-# Crear archivo WSGI para Gunicorn
-cat > $home_dir/web/$domain/private/python_app/wsgi.py << 'WSGIEOF'
-import sys
-import os
-
-# Add the app directory to Python path
-app_dir = os.path.join(os.path.dirname(__file__))
-if app_dir not in sys.path:
-    sys.path.insert(0, app_dir)
-
-from app import app as application
-
-if __name__ == "__main__":
-    application.run()
-WSGIEOF
-
-# Crear script de inicio para la aplicación
-cat > $home_dir/web/$domain/private/python_app/start_app.sh << 'SHEOF'
-#!/bin/bash
-cd $home_dir/web/$domain/private/python_app
-source $home_dir/web/$domain/.python-venv/bin/activate
-pip install -r requirements.txt
-gunicorn --bind 127.0.0.1:$WEB_PORT --workers 3 wsgi:application
-SHEOF
-
-chmod +x $home_dir/web/$domain/private/python_app/start_app.sh
-
-# Instalar dependencias en el virtual environment
-echo "Installing Python dependencies..."
-$home_dir/web/$domain/.python-venv/bin/pip install -r $home_dir/web/$domain/private/python_app/requirements.txt
-
-# Configurar permisos
-chown -R $user:$user $home_dir/web/$domain/private/python_app
-chown -R $user:$user $home_dir/web/$domain/.python-venv
-chmod 755 $home_dir/web/$domain/private/python_app
-
-# Crear systemd service file
-cat > /tmp/${domain}_python.service << 'SERVICEEOF'
-[Unit]
-Description=Python App for $domain
-After=network.target
-Wants=network.target
-
-[Service]
-Type=simple
-User=$user
-Group=$user
-WorkingDirectory=$home_dir/web/$domain/private/python_app
-Environment=PATH=$home_dir/web/$domain/.python-venv/bin:/usr/local/bin:/usr/bin:/bin
-Environment=DOMAIN=$domain
-ExecStart=$home_dir/web/$domain/.python-venv/bin/gunicorn \
-          --bind 127.0.0.1:$WEB_PORT \
-          --workers 2 \
-          --threads 4 \
-          --access-logfile $home_dir/web/$domain/logs/python/access.log \
-          --error-logfile $home_dir/web/$domain/logs/python/error.log \
-          --capture-output \
-          --log-level info \
-          wsgi:application
-Restart=always
-RestartSec=3
-StandardOutput=journal
-StandardError=journal
-
-# Security settings
-NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectSystem=strict
-ProtectHome=yes
-ReadWritePaths=$home_dir/web/$domain/private/python_app
-ReadWritePaths=$home_dir/web/$domain/logs/python
-
-[Install]
-WantedBy=multi-user.target
-SERVICEEOF
-
-echo "Python application template successfully configured for $domain"
-echo "================================================================"
-echo "🎉 Python Application Setup Complete!"
-echo "================================================================"
-echo "App directory: $home_dir/web/$domain/private/python_app"
-echo "Virtual environment: $home_dir/web/$domain/.python-venv"
-echo "Application URL: https://$domain"
-echo "Application port: $WEB_PORT"
-echo "Systemd service: ${domain}_python.service"
-echo "================================================================"
-EOF
-
-    # Establecer permisos correctos en el template
-    chmod 755 "$HESTIA_TEMPLATES_DIR/$TEMPLATE_NAME.tpl"
-    chown root:root "$HESTIA_TEMPLATES_DIR/$TEMPLATE_NAME.tpl"
-    
-    success "Template web de Python creado en: $HESTIA_TEMPLATES_DIR/$TEMPLATE_NAME.tpl"
-}
-
-# Función para crear el template de proxy de Python
-create_python_proxy_template() {
-    info "Creando template de proxy de Python..."
-    
-    # Crear directorio de templates proxy si no existe
-    mkdir -p "$HESTIA_PROXY_TEMPLATES_DIR"
-    
-    cat > "$HESTIA_PROXY_TEMPLATES_DIR/$PROXY_TEMPLATE_NAME.tpl" << 'EOF'
-# Python Application Proxy Configuration for $DOMAIN
-# Generated by Python App Template
-
-# Main application
 location / {
-    proxy_pass http://127.0.0.1:$WEB_PORT;
+    proxy_pass http://127.0.0.1:%proxy_port%;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -414,358 +173,198 @@ location / {
     add_header X-Content-Type-Options "nosniff" always;
 }
 
-# Static files
 location /static/ {
-    alias $HOMEDIR/web/$DOMAIN/private/python_app/static/;
+    alias %home%/%user%/web/%domain%/private/python_app/static/;
     expires 30d;
     access_log off;
     add_header Cache-Control "public, immutable";
 }
 
-# Media files
 location /media/ {
-    alias $HOMEDIR/web/$DOMAIN/private/python_app/media/;
+    alias %home%/%user%/web/%domain%/private/python_app/media/;
     expires 30d;
     access_log off;
 }
 
-# Health check endpoint
 location /health {
-    proxy_pass http://127.0.0.1:$WEB_PORT/health;
+    proxy_pass http://127.0.0.1:%proxy_port%/health;
     proxy_set_header Host $host;
     access_log off;
 }
 
 # Deny access to sensitive files
-location ~ /(\.git|\.env|requirements\.txt|wsgi\.py) {
+location ~ /(\.git|\.env|venv|__pycache__|requirements\.txt) {
     deny all;
     return 404;
 }
-EOF
+PROXYSTPL
 
-    # Establecer permisos correctos en el template proxy
-    chmod 644 "$HESTIA_PROXY_TEMPLATES_DIR/$PROXY_TEMPLATE_NAME.tpl"
-    chown root:root "$HESTIA_PROXY_TEMPLATES_DIR/$PROXY_TEMPLATE_NAME.tpl"
-    
-    success "Template de proxy de Python creado en: $HESTIA_PROXY_TEMPLATES_DIR/$PROXY_TEMPLATE_NAME.tpl"
+    chmod 644 "$NGINX_DIR/python-app.stpl"
+    log "Proxy template installed successfully"
 }
 
-# Función para crear el script de configuración
-create_setup_script() {
-    info "Creando script de configuración..."
+# Install Apache2 template
+install_apache_template() {
+    log "Installing Apache2 template..."
     
-    # Crear directorio de scripts si no existe
-    mkdir -p "$HESTIA_SCRIPTS_DIR"
+    cat > "$APACHE_DIR/python-app.tpl" << 'APACHETPL'
+<VirtualHost %ip%:%web_ssl_port%>
+    ServerName %domain_idn%
+    ServerAlias www.%domain_idn%
     
-    cat > "$HESTIA_SCRIPTS_DIR/$SCRIPT_NAME.sh" << 'SCRIPTEOF'
+    DocumentRoot %docroot%
+    
+    # Python application via WSGI
+    WSGIDaemonProcess %domain% python-home=/home/%user%/web/%domain%/.python-venv python-path=/home/%user%/web/%domain%/private/python_app
+    WSGIProcessGroup %domain%
+    WSGIScriptAlias / /home/%user%/web/%domain%/private/python_app/wsgi.py
+    
+    # Static files
+    Alias /static/ /home/%user%/web/%domain%/private/python_app/static/
+    <Directory /home/%user%/web/%domain%/private/python_app/static>
+        Require all granted
+    </Directory>
+    
+    # Media files
+    Alias /media/ /home/%user%/web/%domain%/private/python_app/media/
+    <Directory /home/%user%/web/%domain%/private/python_app/media>
+        Require all granted
+    </Directory>
+    
+    # WSGI application directory
+    <Directory /home/%user%/web/%domain%/private/python_app>
+        <Files wsgi.py>
+            Require all granted
+        </Files>
+    </Directory>
+    
+    ErrorLog /home/%user%/web/%domain%/logs/apache_error.log
+    CustomLog /home/%user%/web/%domain%/logs/apache_access.log combined
+</VirtualHost>
+APACHETPL
+
+    chmod 644 "$APACHE_DIR/python-app.tpl"
+    log "Apache2 template installed successfully"
+}
+
+# Install application manager script
+install_app_manager() {
+    log "Installing application manager script..."
+    
+    cat > "$SCRIPTS_DIR/python-app-manager" << 'SCRIPT'
 #!/bin/bash
 
-# Hestia CP Python Application Setup Script - Fixed Version
-# Usage: ./hestia-python-setup.sh [domain] [--port PORT] [--python-version VERSION]
+# HestiaCP Python Application Manager
+# Usage: python-app-manager <domain> <action> [port]
 
-# Colores para output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+[Insert the complete python-app-manager.sh script content from previous response]
+SCRIPT
 
-# Función para mostrar mensajes de error
-error() {
-    echo -e "${RED}[ERROR]${NC} $1" >&2
-}
-
-# Función para mostrar mensajes de éxito
-success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-# Función para mostrar información
-info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-}
-
-# Función para mostrar advertencias
-warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-# Función para mostrar ayuda
-show_help() {
-    cat << EOF
-Hestia CP Python Application Setup Script - Fixed Version
-
-Usage: $0 DOMAIN [OPTIONS]
-
-Options:
-    -p, --port PORT          Set application port (default: 5000)
-    -v, --python-version VERSION Set Python version (default: 3.9)
-    -f, --force              Force recreation of application
-    -h, --help               Show this help message
-
-Examples:
-    $0 example.com
-    $0 example.com --port 8000
-    $0 example.com --python-version 3.11 --port 3000
-EOF
-}
-
-# Variables por defecto
-DOMAIN=""
-PORT="5000"
-PYTHON_VERSION="3.9"
-FORCE=false
-
-# Parsear argumentos
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        -p|--port)
-            PORT="$2"
-            shift 2
-            ;;
-        -v|--python-version)
-            PYTHON_VERSION="$2"
-            shift 2
-            ;;
-        -f|--force)
-            FORCE=true
-            shift
-            ;;
-        -h|--help)
-            show_help
-            exit 0
-            ;;
-        -*)
-            error "Opción desconocida: $1"
-            show_help
-            exit 1
-            ;;
-        *)
-            DOMAIN="$1"
-            shift
-            ;;
-    esac
-done
-
-# Validar dominio
-if [[ -z "$DOMAIN" ]]; then
-    error "Debe especificar un dominio"
-    show_help
-    exit 1
-fi
-
-# Validar que el dominio existe en Hestia
-if ! v-list-web-domain $USER $DOMAIN >/dev/null 2>&1; then
-    error "El dominio $DOMAIN no existe para el usuario $USER"
-    exit 1
-fi
-
-# Obtener información del dominio
-DOMAIN_INFO=$(v-list-web-domain $USER $DOMAIN json)
-HOME_DIR=$(echo "$DOMAIN_INFO" | grep -o '"HOME":"[^"]*' | cut -d'"' -f4)
-IP=$(echo "$DOMAIN_INFO" | grep -o '"IP":"[^"]*' | cut -d'"' -f4)
-
-if [[ -z "$HOME_DIR" ]] || [[ -z "$IP" ]]; then
-    error "No se pudo obtener la información del dominio $DOMAIN"
-    exit 1
-fi
-
-info "Configurando aplicación Python para: $DOMAIN"
-info "Directorio home: $HOME_DIR"
-info "IP: $IP"
-info "Puerto: $PORT"
-info "Versión Python: $PYTHON_VERSION"
-
-# Verificar si ya existe una aplicación Python
-if [[ -d "$HOME_DIR/web/$DOMAIN/private/python_app" ]] && [[ "$FORCE" != "true" ]]; then
-    warning "Ya existe una aplicación Python para este dominio."
-    read -p "¿Desea recrearla? (y/N): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        info "Operación cancelada."
-        exit 0
-    fi
-    FORCE=true
-fi
-
-# Aplicar el template de Python
-info "Aplicando template Python..."
-v-change-web-domain-tpl "$USER" "$DOMAIN" "python-app" "yes"
-
-# Configurar proxy template
-info "Configurando proxy template..."
-v-change-web-domain-proxy-tpl "$USER" "$DOMAIN" "python-app" "yes"
-
-# Actualizar el puerto en la configuración del template
-info "Actualizando configuración con puerto $PORT..."
-# Crear configuración temporal con el puerto correcto
-mkdir -p "$HOME_DIR/conf/web/$DOMAIN"
-
-# Instalar systemd service
-info "Configurando servicio systemd..."
-if [[ -f "/tmp/${DOMAIN}_python.service" ]]; then
-    cp "/tmp/${DOMAIN}_python.service" "/etc/systemd/system/"
-    systemctl daemon-reload
-    systemctl enable "${DOMAIN}_python.service"
-    systemctl start "${DOMAIN}_python.service"
+    chmod +x "$SCRIPTS_DIR/python-app-manager"
     
-    # Verificar que el servicio está corriendo
-    if systemctl is-active --quiet "${DOMAIN}_python.service"; then
-        success "Servicio Python iniciado correctamente"
-    else
-        error "El servicio Python no se pudo iniciar"
-        systemctl status "${DOMAIN}_python.service"
-    fi
-fi
-
-# Reiniciar servicios
-info "Reiniciando servicios web..."
-v-restart-web
-
-success "Aplicación Python configurada exitosamente!"
-echo
-info "Resumen de la configuración:"
-echo "  - Dominio: https://$DOMAIN"
-echo "  - Directorio de la app: $HOME_DIR/web/$DOMAIN/private/python_app"
-echo "  - Entorno virtual: $HOME_DIR/web/$DOMAIN/.python-venv"
-echo "  - Puerto de la app: $PORT"
-echo "  - Servicio systemd: ${DOMAIN}_python.service"
-echo "  - Template web: python-app"
-echo "  - Template proxy: python-app"
-echo
-info "Comandos útiles:"
-echo "  - Reiniciar app: systemctl restart ${DOMAIN}_python.service"
-echo "  - Ver logs: journalctl -u ${DOMAIN}_python.service -f"
-echo "  - Instalar dependencias: $HOME_DIR/web/$DOMAIN/.python-venv/bin/pip install [package]"
-echo
-info "¡Recuerda subir tu aplicación Python al directorio private/python_app/!"
-SCRIPTEOF
-
-    # Establecer permisos correctos en el script
-    chmod 755 "$HESTIA_SCRIPTS_DIR/$SCRIPT_NAME.sh"
-    chown root:root "$HESTIA_SCRIPTS_DIR/$SCRIPT_NAME.sh"
+    # Create symbolic link for easy access
+    ln -sf "$SCRIPTS_DIR/python-app-manager" "/usr/local/bin/hestia-python-app"
     
-    # Crear enlace simbólico
-    ln -sf "$HESTIA_SCRIPTS_DIR/$SCRIPT_NAME.sh" "/usr/local/bin/$SCRIPT_NAME"
-    
-    success "Script de configuración creado en: $HESTIA_SCRIPTS_DIR/$SCRIPT_NAME.sh"
-    success "Enlace simbólico creado en: /usr/local/bin/$SCRIPT_NAME"
+    log "Application manager installed successfully"
 }
 
-# Función para verificar la instalación
+# Verify installation
 verify_installation() {
-    info "Verificando la instalación..."
+    log "Verifying installation..."
     
     local errors=0
     
-    # Verificar template web
-    if [[ -f "$HESTIA_TEMPLATES_DIR/$TEMPLATE_NAME.tpl" ]]; then
-        success "✓ Template web encontrado: $TEMPLATE_NAME.tpl"
+    if [ -f "$NGINX_DIR/python-app.tpl" ]; then
+        log "✓ Nginx template (.tpl) found"
     else
-        error "✗ Template web no encontrado"
+        error "✗ Nginx template (.tpl) missing"
         ((errors++))
     fi
     
-    # Verificar template proxy
-    if [[ -f "$HESTIA_PROXY_TEMPLATES_DIR/$PROXY_TEMPLATE_NAME.tpl" ]]; then
-        success "✓ Template proxy encontrado: $PROXY_TEMPLATE_NAME.tpl"
+    if [ -f "$NGINX_DIR/python-app.stpl" ]; then
+        log "✓ Proxy template (.stpl) found"
     else
-        error "✗ Template proxy no encontrado"
+        error "✗ Proxy template (.stpl) missing"
         ((errors++))
     fi
     
-    # Verificar script
-    if [[ -f "$HESTIA_SCRIPTS_DIR/$SCRIPT_NAME.sh" ]]; then
-        success "✓ Script encontrado: $SCRIPT_NAME.sh"
+    if [ -f "$APACHE_DIR/python-app.tpl" ]; then
+        log "✓ Apache2 template found"
     else
-        error "✗ Script no encontrado"
+        error "✗ Apache2 template missing"
         ((errors++))
     fi
     
-    # Verificar enlace simbólico
-    if [[ -L "/usr/local/bin/$SCRIPT_NAME" ]]; then
-        success "✓ Enlace simbólico encontrado: /usr/local/bin/$SCRIPT_NAME"
+    if [ -f "$SCRIPTS_DIR/python-app-manager" ]; then
+        log "✓ Application manager found"
     else
-        error "✗ Enlace simbólico no encontrado"
+        error "✗ Application manager missing"
         ((errors++))
     fi
     
-    # Verificar permisos del template web
-    if [[ -x "$HESTIA_TEMPLATES_DIR/$TEMPLATE_NAME.tpl" ]]; then
-        success "✓ Permisos correctos en el template web"
+    if [ -L "/usr/local/bin/hestia-python-app" ]; then
+        log "✓ Symbolic link created"
     else
-        error "✗ Permisos incorrectos en el template web"
-        ((errors++))
-    fi
-    
-    # Verificar permisos del script
-    if [[ -x "$HESTIA_SCRIPTS_DIR/$SCRIPT_NAME.sh" ]]; then
-        success "✓ Permisos correctos en el script"
-    else
-        error "✗ Permisos incorrectos en el script"
+        error "✗ Symbolic link missing"
         ((errors++))
     fi
     
     return $errors
 }
 
-# Función para mostrar información post-instalación
-show_post_install_info() {
-    echo
-    success "Instalación completada exitosamente!"
-    echo
-    info "Componentes instalados:"
-    echo "  📁 Template web: $HESTIA_TEMPLATES_DIR/$TEMPLATE_NAME.tpl"
-    echo "  📁 Template proxy: $HESTIA_PROXY_TEMPLATES_DIR/$PROXY_TEMPLATE_NAME.tpl"
-    echo "  📁 Script: $HESTIA_SCRIPTS_DIR/$SCRIPT_NAME.sh"
-    echo "  🔗 Comando: $SCRIPT_NAME"
-    echo
-    info "Uso:"
-    echo "  $SCRIPT_NAME ejemplo.com"
-    echo "  $SCRIPT_NAME ejemplo.com --port 8000"
-    echo "  $SCRIPT_NAME ejemplo.com --python-version 3.11"
-    echo
-    info "Para usar el template en Hestia CP:"
-    echo "  1. Ve al panel de control de Hestia"
-    echo "  2. Edita el dominio"
-    echo "  3. En 'Web Template' selecciona: python-app"
-    echo "  4. En 'Proxy Template' selecciona: python-app"
-    echo "  5. Guarda los cambios"
-    echo
-    info "Backup creado en: $BACKUP_DIR"
-}
-
-# Función principal
+# Main installation process
 main() {
     echo
-    echo "================================================================"
-    echo "🧩 Hestia CP Python Template Installer - Fixed Version"
-    echo "================================================================"
+    echo "================================================"
+    echo "🧩 HestiaCP Python Template Installer"
+    echo "================================================"
     echo
     
-    # Verificaciones iniciales
-    check_root
-    check_hestia
+    # Check HestiaCP installation
+    if [ ! -d "/usr/local/hestia" ]; then
+        error "HestiaCP not found in /usr/local/hestia"
+        exit 1
+    fi
     
-    # Crear backup
-    create_backup
+    # Backup existing templates
+    backup_templates
     
-    # Instalar componentes
-    create_python_web_template
-    create_python_proxy_template
-    create_setup_script
+    # Install templates
+    install_nginx_template
+    install_proxy_template
+    install_apache_template
+    install_app_manager
     
-    # Verificar instalación
+    # Verify installation
     if verify_installation; then
-        show_post_install_info
+        echo
+        log "🎉 Installation completed successfully!"
+        echo
+        info "Installed components:"
+        echo "  📄 Nginx Template: $NGINX_DIR/python-app.tpl"
+        echo "  📄 Proxy Template: $NGINX_DIR/python-app.stpl"
+        echo "  📄 Apache2 Template: $APACHE_DIR/python-app.tpl"
+        echo "  🔧 Application Manager: /usr/local/bin/hestia-python-app"
+        echo
+        info "Usage examples:"
+        echo "  hestia-python-app example.com init 8000"
+        echo "  hestia-python-app example.com start"
+        echo "  hestia-python-app example.com status"
+        echo
+        info "To use in HestiaCP:"
+        echo "  1. Go to Web Domains → Edit domain"
+        echo "  2. Web Template: select 'python-app'"
+        echo "  3. Enable Proxy Support"
+        echo "  4. Proxy Template: select 'python-app'"
+        echo "  5. Backend Port: set your application port (e.g., 8000)"
+        echo
+        warning "Note: You may need to restart HestiaCP for templates to appear"
+        echo "  service hestia restart"
     else
-        error "Hubo problemas con la instalación. Por favor, revisa los mensajes anteriores."
+        error "Installation completed with errors. Please check the messages above."
         exit 1
     fi
 }
 
-# Manejar señal de interrupción
-trap 'error "Instalación interrumpida por el usuario"; exit 1' INT TERM
-
-# Ejecutar función principal
+# Run main function
 main "$@"
