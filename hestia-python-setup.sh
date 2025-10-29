@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Hestia CP Python Application Setup Script - FIXED VERSION
-# Usage: ./hestia-python-setup.sh [domain] [--port PORT] [--python-version VERSION]
+# Hestia CP Python Application Setup Script - WITH USER SUPPORT
+# Usage: ./hestia-python-setup.sh [domain] [--user USER] [--port PORT] [--python-version VERSION]
 
 # Colores para output
 RED='\033[0;31m'
@@ -33,11 +33,12 @@ warning() {
 # Función para mostrar ayuda
 show_help() {
     cat << EOF
-Hestia CP Python Application Setup Script - FIXED
+Hestia CP Python Application Setup Script
 
 Usage: $0 DOMAIN [OPTIONS]
 
 Options:
+    -u, --user USER          Hestia user account (default: current user)
     -p, --port PORT          Set application port (default: 8000)
     -v, --python-version VERSION Set Python version (default: 3.9)
     -f, --force              Force recreation of application
@@ -45,20 +46,26 @@ Options:
 
 Examples:
     $0 example.com
-    $0 example.com --port 8000
-    $0 example.com --python-version 3.11 --port 3000
+    $0 example.com --user admin --port 8000
+    $0 example.com --user myuser --python-version 3.11 --port 3000
+    $0 example.com --force
 EOF
 }
 
 # Variables por defecto
 DOMAIN=""
-PORT="8000"  # Changed from 5000 to avoid conflicts
+USER=""  # No default user - will be determined
+PORT="8000"
 PYTHON_VERSION="3.9"
 FORCE=false
 
 # Parsear argumentos
 while [[ $# -gt 0 ]]; do
     case $1 in
+        -u|--user)
+            USER="$2"
+            shift 2
+            ;;
         -p|--port)
             PORT="$2"
             shift 2
@@ -94,20 +101,38 @@ if [[ -z "$DOMAIN" ]]; then
     exit 1
 fi
 
-# Validar que el usuario está definido
+# Determinar usuario si no se especificó
 if [[ -z "$USER" ]]; then
-    USER=$(whoami)
+    # Intentar detectar el usuario actual
+    if [[ -n "$SUDO_USER" ]]; then
+        USER="$SUDO_USER"
+    else
+        USER=$(whoami)
+    fi
+    info "Usando usuario: $USER (detectado automáticamente)"
 fi
 
-# Validar que el dominio existe en Hestia
-if ! v-list-web-domain $USER $DOMAIN >/dev/null 2>&1; then
+# Validar que el usuario existe en el sistema
+if ! id "$USER" &>/dev/null; then
+    error "El usuario $USER no existe en el sistema"
+    exit 1
+fi
+
+# Validar que el usuario tiene permisos en Hestia
+if ! sudo -u "$USER" -H hestia -v &>/dev/null; then
+    error "El usuario $USER no tiene acceso a Hestia CP o no está configurado correctamente"
+    exit 1
+fi
+
+# Validar que el dominio existe en Hestia para este usuario
+if ! sudo -u "$USER" -H v-list-web-domain "$USER" "$DOMAIN" >/dev/null 2>&1; then
     error "El dominio $DOMAIN no existe para el usuario $USER"
     echo "Crear el dominio primero con: v-add-web-domain $USER $DOMAIN"
     exit 1
 fi
 
 # Obtener información del dominio
-DOMAIN_INFO=$(v-list-web-domain $USER $DOMAIN json)
+DOMAIN_INFO=$(sudo -u "$USER" -H v-list-web-domain "$USER" "$DOMAIN" json)
 HOME_DIR=$(echo "$DOMAIN_INFO" | grep -o '"HOME":"[^"]*' | cut -d'"' -f4)
 IP=$(echo "$DOMAIN_INFO" | grep -o '"IP":"[^"]*' | cut -d'"' -f4)
 
@@ -117,7 +142,7 @@ if [[ -z "$HOME_DIR" ]] || [[ -z "$IP" ]]; then
 fi
 
 info "Configurando aplicación Python para: $DOMAIN"
-info "Usuario: $USER"
+info "Usuario Hestia: $USER"
 info "Directorio home: $HOME_DIR"
 info "IP: $IP"
 info "Puerto: $PORT"
@@ -140,11 +165,11 @@ fi
 create_app_structure() {
     info "Creando estructura de directorios..."
     
-    mkdir -p "$APP_DIR/static"
-    mkdir -p "$APP_DIR/templates"
-    mkdir -p "$APP_DIR/media"
-    mkdir -p "$HOME_DIR/web/$DOMAIN/.python-venv"
-    mkdir -p "$HOME_DIR/web/$DOMAIN/logs/python"
+    sudo -u "$USER" -H mkdir -p "$APP_DIR/static"
+    sudo -u "$USER" -H mkdir -p "$APP_DIR/templates"
+    sudo -u "$USER" -H mkdir -p "$APP_DIR/media"
+    sudo -u "$USER" -H mkdir -p "$HOME_DIR/web/$DOMAIN/.python-venv"
+    sudo -u "$USER" -H mkdir -p "$HOME_DIR/web/$DOMAIN/logs/python"
     
     success "Estructura de directorios creada"
 }
@@ -158,8 +183,13 @@ setup_virtualenv() {
     if [[ -d "$VENV_DIR/bin" ]] && [[ "$FORCE" != "true" ]]; then
         warning "El entorno virtual ya existe. Usando el existente."
     else
+        # Limpiar si force está activado
+        if [[ "$FORCE" == "true" ]] && [[ -d "$VENV_DIR" ]]; then
+            sudo -u "$USER" -H rm -rf "$VENV_DIR"
+        fi
+        
         if command -v python3 >/dev/null 2>&1; then
-            python3 -m venv "$VENV_DIR"
+            sudo -u "$USER" -H python3 -m venv "$VENV_DIR"
             success "Entorno virtual creado"
         else
             error "Python3 no está instalado"
@@ -172,15 +202,20 @@ setup_virtualenv() {
 create_default_app() {
     info "Creando aplicación Python por defecto..."
     
+    # Limpiar directorio si force está activado
+    if [[ "$FORCE" == "true" ]]; then
+        sudo -u "$USER" -H rm -rf "$APP_DIR"/* 2>/dev/null || true
+    fi
+    
     # requirements.txt
-    cat > "$APP_DIR/requirements.txt" << 'REQ'
+    sudo -u "$USER" -H bash -c "cat > '$APP_DIR/requirements.txt'" << 'REQ'
 Flask==2.3.3
 gunicorn==21.2.0
 Werkzeug==2.3.7
 REQ
 
     # app.py
-    cat > "$APP_DIR/app.py" << 'APP'
+    sudo -u "$USER" -H bash -c "cat > '$APP_DIR/app.py'" << 'APP'
 from flask import Flask, jsonify, render_template
 import os
 import datetime
@@ -213,8 +248,8 @@ if __name__ == '__main__':
 APP
 
     # templates/index.html
-    mkdir -p "$APP_DIR/templates"
-    cat > "$APP_DIR/templates/index.html" << 'HTML'
+    sudo -u "$USER" -H mkdir -p "$APP_DIR/templates"
+    sudo -u "$USER" -H bash -c "cat > '$APP_DIR/templates/index.html'" << 'HTML'
 <!DOCTYPE html>
 <html>
 <head>
@@ -269,7 +304,7 @@ APP
 HTML
 
     # wsgi.py
-    cat > "$APP_DIR/wsgi.py" << 'WSGI'
+    sudo -u "$USER" -H bash -c "cat > '$APP_DIR/wsgi.py'" << 'WSGI'
 import sys
 import os
 
@@ -292,7 +327,7 @@ install_dependencies() {
     
     VENV_DIR="$HOME_DIR/web/$DOMAIN/.python-venv"
     
-    if "$VENV_DIR/bin/pip" install -r "$APP_DIR/requirements.txt"; then
+    if sudo -u "$USER" -H bash -c "source '$VENV_DIR/bin/activate' && pip install -r '$APP_DIR/requirements.txt'"; then
         success "Dependencias instaladas correctamente"
     else
         error "Error al instalar dependencias"
@@ -304,10 +339,10 @@ install_dependencies() {
 set_permissions() {
     info "Configurando permisos..."
     
-    chown -R $USER:$USER "$APP_DIR"
-    chown -R $USER:$USER "$HOME_DIR/web/$DOMAIN/.python-venv"
-    chown -R $USER:$USER "$HOME_DIR/web/$DOMAIN/logs"
-    chmod 755 "$APP_DIR"
+    # Los archivos ya deberían tener los permisos correctos por el uso de sudo -u $USER
+    # Solo aseguramos permisos de ejecución si es necesario
+    sudo -u "$USER" -H chmod -R 755 "$APP_DIR"
+    sudo -u "$USER" -H chmod -R 755 "$HOME_DIR/web/$DOMAIN/.python-venv"
     
     success "Permisos configurados"
 }
@@ -319,6 +354,7 @@ create_systemd_service() {
     SERVICE_NAME="${DOMAIN//./_}_python"
     VENV_DIR="$HOME_DIR/web/$DOMAIN/.python-venv"
     
+    # Crear el archivo de servicio temporal como root
     cat > "/tmp/$SERVICE_NAME.service" << EOF
 [Unit]
 Description=Python Application for $DOMAIN
@@ -356,7 +392,7 @@ configure_hestia_templates() {
     info "Configurando templates en HestiaCP..."
     
     # Aplicar template web Python
-    if v-change-web-domain-tpl $USER $DOMAIN 'python-app' 'yes'; then
+    if sudo -u "$USER" -H v-change-web-domain-tpl "$USER" "$DOMAIN" 'python-app' 'yes'; then
         success "Template web Python aplicado"
     else
         error "Error al aplicar template web Python"
@@ -366,7 +402,7 @@ configure_hestia_templates() {
     
     # Configurar proxy
     sleep 2
-    if v-change-web-domain-proxy-tpl $USER $DOMAIN 'python-app' 'yes'; then
+    if sudo -u "$USER" -H v-change-web-domain-proxy-tpl "$USER" "$DOMAIN" 'python-app' 'yes'; then
         success "Template proxy Python aplicado"
     else
         error "Error al aplicar template proxy Python"
@@ -375,7 +411,7 @@ configure_hestia_templates() {
     
     # Actualizar puerto del backend
     sleep 2
-    if v-change-web-domain-backend $USER $DOMAIN 'python' "$PORT" 'no'; then
+    if sudo -u "$USER" -H v-change-web-domain-backend "$USER" "$DOMAIN" 'python' "$PORT" 'no'; then
         success "Puerto backend configurado a $PORT"
     else
         warning "No se pudo configurar el puerto backend automáticamente"
@@ -385,9 +421,9 @@ configure_hestia_templates() {
 
 # Reiniciar servicios
 restart_services() {
-    info "Reiniciando servicios..."
+    info "Reiniciando servicios web..."
     
-    v-restart-web
+    sudo -u "$USER" -H v-restart-web
     sleep 2
     
     success "Servicios reiniciados"
@@ -399,24 +435,39 @@ start_application_service() {
     
     SERVICE_NAME="${DOMAIN//./_}_python"
     
-    # Copiar servicio a systemd
-    cp "/tmp/$SERVICE_NAME.service" "/etc/systemd/system/"
-    systemctl daemon-reload
-    systemctl enable "$SERVICE_NAME.service"
-    
-    # Intentar iniciar el servicio
-    if systemctl start "$SERVICE_NAME.service"; then
-        sleep 2
-        if systemctl is-active --quiet "$SERVICE_NAME.service"; then
-            success "Servicio de aplicación iniciado correctamente"
+    # Copiar servicio a systemd (requiere root)
+    if sudo cp "/tmp/$SERVICE_NAME.service" "/etc/systemd/system/"; then
+        sudo systemctl daemon-reload
+        sudo systemctl enable "$SERVICE_NAME.service"
+        
+        # Intentar iniciar el servicio
+        if sudo systemctl start "$SERVICE_NAME.service"; then
+            sleep 2
+            if sudo systemctl is-active --quiet "$SERVICE_NAME.service"; then
+                success "Servicio de aplicación iniciado correctamente"
+            else
+                error "El servicio se inició pero no está activo"
+                sudo systemctl status "$SERVICE_NAME.service"
+            fi
         else
-            error "El servicio se inició pero no está activo"
-            systemctl status "$SERVICE_NAME.service"
+            error "Error al iniciar el servicio"
+            sudo systemctl status "$SERVICE_NAME.service"
         fi
     else
-        error "Error al iniciar el servicio"
-        systemctl status "$SERVICE_NAME.service"
+        error "Error al copiar el servicio systemd (se requieren permisos root)"
+        info "Puedes copiar manualmente:"
+        echo "  sudo cp /tmp/$SERVICE_NAME.service /etc/systemd/system/"
+        echo "  sudo systemctl daemon-reload"
+        echo "  sudo systemctl enable $SERVICE_NAME.service"
+        echo "  sudo systemctl start $SERVICE_NAME.service"
     fi
+}
+
+# Limpiar archivos temporales
+cleanup() {
+    SERVICE_NAME="${DOMAIN//./_}_python"
+    rm -f "/tmp/$SERVICE_NAME.service"
+    info "Archivos temporales limpiados"
 }
 
 # Función principal
@@ -432,31 +483,32 @@ main() {
     configure_hestia_templates
     restart_services
     start_application_service
+    cleanup
     
     # Mostrar resumen
     success "Aplicación Python configurada exitosamente!"
     echo
     info "=== RESUMEN DE CONFIGURACIÓN ==="
     echo "  Dominio: https://$DOMAIN"
+    echo "  Usuario: $USER"
     echo "  Directorio de la app: $APP_DIR"
     echo "  Entorno virtual: $HOME_DIR/web/$DOMAIN/.python-venv"
     echo "  Puerto de la app: $PORT"
     echo "  Servicio systemd: ${DOMAIN//./_}_python.service"
     echo
     info "=== COMANDOS ÚTILES ==="
-    echo "  Reiniciar app: systemctl restart ${DOMAIN//./_}_python.service"
-    echo "  Ver logs: journalctl -u ${DOMAIN//./_}_python.service -f"
-    echo "  Ver estado: systemctl status ${DOMAIN//./_}_python.service"
+    echo "  Reiniciar app: sudo systemctl restart ${DOMAIN//./_}_python.service"
+    echo "  Ver logs: sudo journalctl -u ${DOMAIN//./_}_python.service -f"
+    echo "  Ver estado: sudo systemctl status ${DOMAIN//./_}_python.service"
     echo "  Instalar dependencias: $HOME_DIR/web/$DOMAIN/.python-venv/bin/pip install [package]"
     echo
     info "=== PRÓXIMOS PASOS ==="
     echo "  1. Sube tu aplicación Python a: $APP_DIR"
     echo "  2. Actualiza requirements.txt si es necesario"
-    echo "  3. Reinicia la aplicación: systemctl restart ${DOMAIN//./_}_python.service"
+    echo "  3. Reinicia la aplicación: sudo systemctl restart ${DOMAIN//./_}_python.service"
     echo "  4. Configura SSL/Let's Encrypt en el panel de HestiaCP"
     echo
-    warning "Si tienes problemas con Let's Encrypt, ejecuta el script de reparación:"
-    echo "  ./fix-letsencrypt-python.sh"
+    warning "Si tienes problemas con Let's Encrypt, asegúrate de usar los templates corregidos"
 }
 
 # Ejecutar función principal
