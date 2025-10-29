@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Hestia CP Python Application Setup Script
+# Hestia CP Python Application Setup Script - FIXED VERSION
 # Usage: ./hestia-python-setup.sh [domain] [--port PORT] [--python-version VERSION]
 
 # Colores para output
@@ -33,12 +33,12 @@ warning() {
 # Función para mostrar ayuda
 show_help() {
     cat << EOF
-Hestia CP Python Application Setup Script
+Hestia CP Python Application Setup Script - FIXED
 
 Usage: $0 DOMAIN [OPTIONS]
 
 Options:
-    -p, --port PORT          Set application port (default: 5000)
+    -p, --port PORT          Set application port (default: 8000)
     -v, --python-version VERSION Set Python version (default: 3.9)
     -f, --force              Force recreation of application
     -h, --help               Show this help message
@@ -52,7 +52,7 @@ EOF
 
 # Variables por defecto
 DOMAIN=""
-PORT="5000"
+PORT="8000"  # Changed from 5000 to avoid conflicts
 PYTHON_VERSION="3.9"
 FORCE=false
 
@@ -94,9 +94,15 @@ if [[ -z "$DOMAIN" ]]; then
     exit 1
 fi
 
+# Validar que el usuario está definido
+if [[ -z "$USER" ]]; then
+    USER=$(whoami)
+fi
+
 # Validar que el dominio existe en Hestia
 if ! v-list-web-domain $USER $DOMAIN >/dev/null 2>&1; then
     error "El dominio $DOMAIN no existe para el usuario $USER"
+    echo "Crear el dominio primero con: v-add-web-domain $USER $DOMAIN"
     exit 1
 fi
 
@@ -111,13 +117,15 @@ if [[ -z "$HOME_DIR" ]] || [[ -z "$IP" ]]; then
 fi
 
 info "Configurando aplicación Python para: $DOMAIN"
+info "Usuario: $USER"
 info "Directorio home: $HOME_DIR"
 info "IP: $IP"
 info "Puerto: $PORT"
 info "Versión Python: $PYTHON_VERSION"
 
 # Verificar si ya existe una aplicación Python
-if [[ -d "$HOME_DIR/web/$DOMAIN/private/python_app" ]] && [[ "$FORCE" != "true" ]]; then
+APP_DIR="$HOME_DIR/web/$DOMAIN/private/python_app"
+if [[ -d "$APP_DIR" ]] && [[ "$FORCE" != "true" ]]; then
     warning "Ya existe una aplicación Python para este dominio."
     read -p "¿Desea recrearla? (y/N): " -n 1 -r
     echo
@@ -128,111 +136,328 @@ if [[ -d "$HOME_DIR/web/$DOMAIN/private/python_app" ]] && [[ "$FORCE" != "true" 
     FORCE=true
 fi
 
-# Crear template temporal
-TEMPLATE_FILE="/tmp/python-app-${DOMAIN}.tpl"
-cat > $TEMPLATE_FILE << EOF
-#!/bin/bash
+# Crear estructura de directorios
+create_app_structure() {
+    info "Creando estructura de directorios..."
+    
+    mkdir -p "$APP_DIR/static"
+    mkdir -p "$APP_DIR/templates"
+    mkdir -p "$APP_DIR/media"
+    mkdir -p "$HOME_DIR/web/$DOMAIN/.python-venv"
+    mkdir -p "$HOME_DIR/web/$DOMAIN/logs/python"
+    
+    success "Estructura de directorios creada"
+}
 
-# Template temporal para $DOMAIN
-WEB_TEMPLATE='python-app'
-WEB_BACKEND='python'
-WEB_PYTHON_VERSION='$PYTHON_VERSION'
-WEB_PORT='$PORT'
+# Crear entorno virtual
+setup_virtualenv() {
+    info "Configurando entorno virtual Python..."
+    
+    VENV_DIR="$HOME_DIR/web/$DOMAIN/.python-venv"
+    
+    if [[ -d "$VENV_DIR/bin" ]] && [[ "$FORCE" != "true" ]]; then
+        warning "El entorno virtual ya existe. Usando el existente."
+    else
+        if command -v python3 >/dev/null 2>&1; then
+            python3 -m venv "$VENV_DIR"
+            success "Entorno virtual creado"
+        else
+            error "Python3 no está instalado"
+            exit 1
+        fi
+    fi
+}
 
-user='$USER'
-domain='$DOMAIN'
-ip='$IP'
-home_dir='$HOME_DIR'
-public_html='$HOME_DIR/web/$DOMAIN/public_html'
+# Crear archivos de aplicación por defecto
+create_default_app() {
+    info "Creando aplicación Python por defecto..."
+    
+    # requirements.txt
+    cat > "$APP_DIR/requirements.txt" << 'REQ'
+Flask==2.3.3
+gunicorn==21.2.0
+Werkzeug==2.3.7
+REQ
+
+    # app.py
+    cat > "$APP_DIR/app.py" << 'APP'
+from flask import Flask, jsonify, render_template
+import os
+import datetime
+
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return render_template('index.html', 
+                         domain=os.environ.get('DOMAIN', 'localhost'),
+                         time=datetime.datetime.now())
+
+@app.route('/health')
+def health():
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.datetime.now().isoformat(),
+        'service': 'Python Flask App'
+    })
+
+@app.route('/api/info')
+def api_info():
+    return jsonify({
+        'python_version': os.sys.version,
+        'environment': os.environ.get('FLASK_ENV', 'production')
+    })
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=False)
+APP
+
+    # templates/index.html
+    mkdir -p "$APP_DIR/templates"
+    cat > "$APP_DIR/templates/index.html" << 'HTML'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Python App - {{ domain }}</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .container { 
+            background: white; 
+            padding: 3rem; 
+            border-radius: 15px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            text-align: center;
+            max-width: 600px;
+        }
+        .logo { 
+            font-size: 4rem; 
+            margin-bottom: 1rem; 
+        }
+        h1 { 
+            color: #333; 
+            margin-bottom: 1rem;
+        }
+        .status {
+            background: #4CAF50;
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            display: inline-block;
+            margin: 1rem 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">🐍</div>
+        <h1>Python Application Ready!</h1>
+        <p>Your Python application is successfully deployed on <strong>{{ domain }}</strong></p>
+        <div class="status">🚀 Application Running</div>
+        <p><em>Server Time: {{ time }}</em></p>
+    </div>
+</body>
+</html>
+HTML
+
+    # wsgi.py
+    cat > "$APP_DIR/wsgi.py" << 'WSGI'
+import sys
+import os
+
+app_dir = os.path.dirname(os.path.abspath(__file__))
+if app_dir not in sys.path:
+    sys.path.insert(0, app_dir)
+
+from app import app as application
+
+if __name__ == "__main__":
+    application.run()
+WSGI
+
+    success "Aplicación por defecto creada"
+}
+
+# Instalar dependencias
+install_dependencies() {
+    info "Instalando dependencias Python..."
+    
+    VENV_DIR="$HOME_DIR/web/$DOMAIN/.python-venv"
+    
+    if "$VENV_DIR/bin/pip" install -r "$APP_DIR/requirements.txt"; then
+        success "Dependencias instaladas correctamente"
+    else
+        error "Error al instalar dependencias"
+        exit 1
+    fi
+}
+
+# Configurar permisos
+set_permissions() {
+    info "Configurando permisos..."
+    
+    chown -R $USER:$USER "$APP_DIR"
+    chown -R $USER:$USER "$HOME_DIR/web/$DOMAIN/.python-venv"
+    chown -R $USER:$USER "$HOME_DIR/web/$DOMAIN/logs"
+    chmod 755 "$APP_DIR"
+    
+    success "Permisos configurados"
+}
+
+# Crear servicio systemd
+create_systemd_service() {
+    info "Creando servicio systemd..."
+    
+    SERVICE_NAME="${DOMAIN//./_}_python"
+    VENV_DIR="$HOME_DIR/web/$DOMAIN/.python-venv"
+    
+    cat > "/tmp/$SERVICE_NAME.service" << EOF
+[Unit]
+Description=Python Application for $DOMAIN
+After=network.target
+
+[Service]
+Type=simple
+User=$USER
+Group=$USER
+WorkingDirectory=$APP_DIR
+Environment=PATH=$VENV_DIR/bin:/usr/local/bin:/usr/bin:/bin
+Environment=DOMAIN=$DOMAIN
+Environment=FLASK_ENV=production
+ExecStart=$VENV_DIR/bin/gunicorn \\
+          --bind 127.0.0.1:$PORT \\
+          --workers 2 \\
+          --threads 2 \\
+          --access-logfile $HOME_DIR/web/$DOMAIN/logs/python/access.log \\
+          --error-logfile $HOME_DIR/web/$DOMAIN/logs/python/error.log \\
+          --capture-output \\
+          --log-level info \\
+          wsgi:application
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
-# Agregar el contenido del template principal
-cat python-app.tpl >> $TEMPLATE_FILE
-
-# Aplicar el template
-info "Aplicando template Python..."
-chmod +x $TEMPLATE_FILE
-
-# Backup de configuración actual si existe
-if [[ -f "$HOME_DIR/conf/web/$DOMAIN/nginx.conf" ]]; then
-    cp "$HOME_DIR/conf/web/$DOMAIN/nginx.conf" "$HOME_DIR/conf/web/$DOMAIN/nginx.conf.backup.$(date +%Y%m%d_%H%M%S)"
-fi
-
-# Ejecutar template
-if $TEMPLATE_FILE; then
-    success "Template aplicado correctamente"
-else
-    error "Error al aplicar el template"
-    exit 1
-fi
-
-# Configurar proxy en Hestia
-info "Configurando proxy en Hestia..."
-v-change-web-domain-proxy-tpl $USER $DOMAIN 'default' 'no' >/dev/null 2>&1
-sleep 2
-
-# Crear configuración de proxy manual
-cat > "$HOME_DIR/conf/web/$DOMAIN/nginx.conf" << EOF
-# Python Application Configuration for $DOMAIN
-location / {
-    proxy_pass http://127.0.0.1:$PORT;
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
-    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto \$scheme;
-    proxy_connect_timeout 60s;
-    proxy_send_timeout 60s;
-    proxy_read_timeout 60s;
+    success "Servicio systemd creado en /tmp/$SERVICE_NAME.service"
 }
 
-location /static/ {
-    alias $HOME_DIR/web/$DOMAIN/private/python_app/static/;
-    expires 30d;
-    access_log off;
+# Configurar template en HestiaCP
+configure_hestia_templates() {
+    info "Configurando templates en HestiaCP..."
+    
+    # Aplicar template web Python
+    if v-change-web-domain-tpl $USER $DOMAIN 'python-app' 'yes'; then
+        success "Template web Python aplicado"
+    else
+        error "Error al aplicar template web Python"
+        error "Asegúrate de que el template 'python-app' está instalado"
+        exit 1
+    fi
+    
+    # Configurar proxy
+    sleep 2
+    if v-change-web-domain-proxy-tpl $USER $DOMAIN 'python-app' 'yes'; then
+        success "Template proxy Python aplicado"
+    else
+        error "Error al aplicar template proxy Python"
+        exit 1
+    fi
+    
+    # Actualizar puerto del backend
+    sleep 2
+    if v-change-web-domain-backend $USER $DOMAIN 'python' "$PORT" 'no'; then
+        success "Puerto backend configurado a $PORT"
+    else
+        warning "No se pudo configurar el puerto backend automáticamente"
+        info "Configura manualmente en HestiaCP: Backend Port -> $PORT"
+    fi
 }
-
-location /media/ {
-    alias $HOME_DIR/web/$DOMAIN/private/python_app/media/;
-    expires 30d;
-    access_log off;
-}
-EOF
 
 # Reiniciar servicios
-info "Reiniciando servicios web..."
-v-restart-web
+restart_services() {
+    info "Reiniciando servicios..."
+    
+    v-restart-web
+    sleep 2
+    
+    success "Servicios reiniciados"
+}
 
-# Instalar systemd service
-info "Configurando servicio systemd..."
-cp /tmp/${DOMAIN}_python.service /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable ${DOMAIN}_python.service
-systemctl start ${DOMAIN}_python.service
+# Iniciar servicio de aplicación
+start_application_service() {
+    info "Iniciando servicio de aplicación..."
+    
+    SERVICE_NAME="${DOMAIN//./_}_python"
+    
+    # Copiar servicio a systemd
+    cp "/tmp/$SERVICE_NAME.service" "/etc/systemd/system/"
+    systemctl daemon-reload
+    systemctl enable "$SERVICE_NAME.service"
+    
+    # Intentar iniciar el servicio
+    if systemctl start "$SERVICE_NAME.service"; then
+        sleep 2
+        if systemctl is-active --quiet "$SERVICE_NAME.service"; then
+            success "Servicio de aplicación iniciado correctamente"
+        else
+            error "El servicio se inició pero no está activo"
+            systemctl status "$SERVICE_NAME.service"
+        fi
+    else
+        error "Error al iniciar el servicio"
+        systemctl status "$SERVICE_NAME.service"
+    fi
+}
 
-# Verificar que el servicio está corriendo
-if systemctl is-active --quiet ${DOMAIN}_python.service; then
-    success "Servicio Python iniciado correctamente"
-else
-    error "El servicio Python no se pudo iniciar"
-    systemctl status ${DOMAIN}_python.service
-fi
+# Función principal
+main() {
+    info "Iniciando configuración de aplicación Python..."
+    
+    create_app_structure
+    setup_virtualenv
+    create_default_app
+    install_dependencies
+    set_permissions
+    create_systemd_service
+    configure_hestia_templates
+    restart_services
+    start_application_service
+    
+    # Mostrar resumen
+    success "Aplicación Python configurada exitosamente!"
+    echo
+    info "=== RESUMEN DE CONFIGURACIÓN ==="
+    echo "  Dominio: https://$DOMAIN"
+    echo "  Directorio de la app: $APP_DIR"
+    echo "  Entorno virtual: $HOME_DIR/web/$DOMAIN/.python-venv"
+    echo "  Puerto de la app: $PORT"
+    echo "  Servicio systemd: ${DOMAIN//./_}_python.service"
+    echo
+    info "=== COMANDOS ÚTILES ==="
+    echo "  Reiniciar app: systemctl restart ${DOMAIN//./_}_python.service"
+    echo "  Ver logs: journalctl -u ${DOMAIN//./_}_python.service -f"
+    echo "  Ver estado: systemctl status ${DOMAIN//./_}_python.service"
+    echo "  Instalar dependencias: $HOME_DIR/web/$DOMAIN/.python-venv/bin/pip install [package]"
+    echo
+    info "=== PRÓXIMOS PASOS ==="
+    echo "  1. Sube tu aplicación Python a: $APP_DIR"
+    echo "  2. Actualiza requirements.txt si es necesario"
+    echo "  3. Reinicia la aplicación: systemctl restart ${DOMAIN//./_}_python.service"
+    echo "  4. Configura SSL/Let's Encrypt en el panel de HestiaCP"
+    echo
+    warning "Si tienes problemas con Let's Encrypt, ejecuta el script de reparación:"
+    echo "  ./fix-letsencrypt-python.sh"
+}
 
-# Mostrar información final
-success "Aplicación Python configurada exitosamente!"
-echo
-info "Resumen de la configuración:"
-echo "  - Dominio: https://$DOMAIN"
-echo "  - Directorio de la app: $HOME_DIR/web/$DOMAIN/private/python_app"
-echo "  - Entorno virtual: $HOME_DIR/web/$DOMAIN/.python-venv"
-echo "  - Puerto de la app: $PORT"
-echo "  - Servicio systemd: ${DOMAIN}_python.service"
-echo
-info "Comandos útiles:"
-echo "  - Reiniciar app: systemctl restart ${DOMAIN}_python.service"
-echo "  - Ver logs: journalctl -u ${DOMAIN}_python.service -f"
-echo "  - Instalar dependencias: $HOME_DIR/web/$DOMAIN/.python-venv/bin/pip install [package]"
-echo
-info "¡Recuerda subir tu aplicación Python al directorio private/python_app/!"
-
-# Limpiar archivo temporal
-rm -f $TEMPLATE_FILE
+# Ejecutar función principal
+main "$@"
