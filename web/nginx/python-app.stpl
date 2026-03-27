@@ -44,6 +44,8 @@ server {
     location ~ /\.svn/ {
         return 404;
 
+    }
+
     location ~ /\.git/ {
         return 404;
     }
@@ -56,4 +58,3 @@ server {
 
     include %home%/%user%/conf/web/s%proxy_system%.%domain%.conf*;
 }
-
