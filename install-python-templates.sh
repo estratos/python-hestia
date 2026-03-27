@@ -1,5 +1,4 @@
-  #!/bin/bash
-
+#!/bin/bash
 # Interactive script to install HestiaCP nginx templates
 # Supports: Ubuntu 22.04, Ubuntu 24.04, and Debian (11, 12)
 # Validates OS version before installation
