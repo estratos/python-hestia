@@ -329,7 +329,7 @@ This script creates a systemd service that manages your Python application as a 
 Download and make the script executable:
 
 ```bash
-wget https://raw.githubusercontent.com/estratos/python-hestia/main/create-python-service.sh
+wget https://raw.githubusercontent.com/estratos/python-hestia/refs/heads/main/create-python-service.sh
 chmod +x create-python-service.sh
 ```
 
