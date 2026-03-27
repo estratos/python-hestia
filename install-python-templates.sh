@@ -3,16 +3,15 @@
 # Supports: Ubuntu 22.04, Ubuntu 24.04, and Debian (11, 12)
 # Validates OS version before installation
 
-set -e  # Exit on error
+set -e
 
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Function to print colored output
 print_status() {
     echo -e "${BLUE}[INFO]${NC} $1"
 }
@@ -29,7 +28,6 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Function to check if running as root
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         print_error "This script must be run as root (use sudo)"
@@ -37,7 +35,6 @@ check_root() {
     fi
 }
 
-# Function to detect OS and version
 detect_os() {
     if [[ -f /etc/os-release ]]; then
         . /etc/os-release
@@ -52,11 +49,9 @@ detect_os() {
     fi
 }
 
-# Function to validate OS compatibility
 validate_os_compatibility() {
     print_status "Checking OS compatibility..."
     
-    # Check for Ubuntu
     if [[ "$OS_ID" == "ubuntu" ]]; then
         case "$OS_VERSION" in
             "22.04"|"24.04")
@@ -69,8 +64,6 @@ validate_os_compatibility() {
                 exit 1
                 ;;
         esac
-    
-    # Check for Debian
     elif [[ "$OS_ID" == "debian" ]]; then
         case "$OS_VERSION" in
             "11"|"12")
@@ -83,8 +76,6 @@ validate_os_compatibility() {
                 exit 1
                 ;;
         esac
-    
-    # Unsupported OS
     else
         print_error "This script supports Ubuntu (22.04, 24.04) and Debian (11, 12) only."
         print_error "Detected: $OS_NAME $OS_VERSION"
@@ -92,15 +83,12 @@ validate_os_compatibility() {
     fi
 }
 
-# Function to check HestiaCP installation path (varies by OS)
 check_hestia_installation() {
     print_status "Checking HestiaCP installation..."
     
-    # HestiaCP is typically installed in /usr/local/hestia regardless of OS
     if [[ -d "/usr/local/hestia" ]]; then
         print_success "HestiaCP installation detected"
         
-        # Check for HestiaCP service
         if systemctl list-units --full -all | grep -q "hestia.service"; then
             print_success "HestiaCP service detected"
         else
@@ -119,7 +107,6 @@ check_hestia_installation() {
     fi
 }
 
-# Function to check if template files exist
 check_template_files() {
     print_status "Checking for template files..."
     
@@ -145,7 +132,6 @@ check_template_files() {
     print_success "All template files found"
 }
 
-# Function to create target directory if it doesn't exist
 create_target_directory() {
     local target_dir="/usr/local/hestia/data/templates/web/nginx"
     
@@ -165,7 +151,6 @@ create_target_directory() {
     fi
 }
 
-# Function to backup existing templates
 backup_existing_templates() {
     local target_dir="/usr/local/hestia/data/templates/web/nginx"
     local backup_dir="/usr/local/hestia/data/templates/web/nginx/backup_$(date +%Y%m%d_%H%M%S)"
@@ -190,13 +175,11 @@ backup_existing_templates() {
     fi
 }
 
-# Function to install templates
 install_templates() {
     local target_dir="/usr/local/hestia/data/templates/web/nginx"
     
     print_status "Installing templates..."
     
-    # Copy files with verification
     cp -v "web/nginx/python-app.stpl" "$target_dir/"
     if [[ $? -eq 0 ]]; then
         print_success "Installed python-app.stpl"
@@ -213,18 +196,14 @@ install_templates() {
         exit 1
     fi
     
-    # Set proper permissions (HestiaCP typically uses root:root with 644)
     chmod 644 "$target_dir/python-app.stpl"
     chmod 644 "$target_dir/python-app.tpl"
-    
-    # Set ownership (typically root:root for HestiaCP templates)
     chown root:root "$target_dir/python-app.stpl"
     chown root:root "$target_dir/python-app.tpl"
     
     print_success "Templates installed successfully"
 }
 
-# Function to verify installation
 verify_installation() {
     local target_dir="/usr/local/hestia/data/templates/web/nginx"
     
@@ -233,12 +212,10 @@ verify_installation() {
     if [[ -f "$target_dir/python-app.stpl" ]] && [[ -f "$target_dir/python-app.tpl" ]]; then
         print_success "Verification passed: Both template files are present"
         
-        # Show file details
         echo
         print_status "Installed files:"
         ls -lh "$target_dir/python-app.stpl" "$target_dir/python-app.tpl"
         
-        # Verify file content (basic check)
         if [[ -s "$target_dir/python-app.stpl" ]] && [[ -s "$target_dir/python-app.tpl" ]]; then
             print_success "File content verification passed (non-empty files)"
         else
@@ -250,7 +227,6 @@ verify_installation() {
     fi
 }
 
-# Function to suggest service restart commands based on OS
 suggest_restart_commands() {
     echo
     print_status "Recommended restart commands for your OS ($OS_ID $OS_VERSION):"
@@ -268,35 +244,34 @@ suggest_restart_commands() {
     fi
 }
 
-# Function to show post-installation instructions
 show_post_install_instructions() {
     echo
     echo "================================================================================"
     print_success "INSTALLATION COMPLETE!"
     echo "================================================================================"
     echo
-    echo "✅ System: $OS_NAME $OS_VERSION"
-    echo "✅ Templates installed successfully"
+    echo "System: $OS_NAME $OS_VERSION"
+    echo "Templates installed successfully"
     echo
-    echo "📋 Next steps:"
+    echo "Next steps:"
     echo
     suggest_restart_commands
     echo
-    echo "📁 Template locations:"
+    echo "Template locations:"
     echo "  - /usr/local/hestia/data/templates/web/nginx/python-app.stpl"
     echo "  - /usr/local/hestia/data/templates/web/nginx/python-app.tpl"
     echo
-    echo "🎯 How to use these templates:"
+    echo "How to use these templates:"
     echo "  1. In HestiaCP, go to Web Domains"
     echo "  2. Create a new domain or edit an existing one"
     echo "  3. Navigate to Advanced Options"
     echo "  4. Select 'python-app' from the Nginx Template dropdown"
     echo "  5. Save and apply changes"
     echo
-    echo "💾 Backup location:"
+    echo "Backup location:"
     echo "  /usr/local/hestia/data/templates/web/nginx/backup_*"
     echo
-    echo "🔧 Troubleshooting:"
+    echo "Troubleshooting:"
     echo "  - If templates don't appear, try clearing browser cache"
     echo "  - Check HestiaCP logs: sudo tail -f /var/log/hestia/hestia.log"
     echo "  - Verify template syntax: nginx -t"
@@ -304,16 +279,13 @@ show_post_install_instructions() {
     echo "================================================================================"
 }
 
-# Function to confirm installation
 confirm_installation() {
     echo
     print_status "Installation Summary:"
-    echo "  ┌─────────────────────────────────────────"
-    echo "  │ Operating System: $OS_NAME $OS_VERSION"
-    echo "  │ Template Source: web/nginx/python-app.{stpl,tpl}"
-    echo "  │ Installation Path: /usr/local/hestia/data/templates/web/nginx/"
-    echo "  │ Backup: Will be created if existing templates found"
-    echo "  └─────────────────────────────────────────"
+    echo "  Operating System: $OS_NAME $OS_VERSION"
+    echo "  Template Source: web/nginx/python-app.{stpl,tpl}"
+    echo "  Installation Path: /usr/local/hestia/data/templates/web/nginx/"
+    echo "  Backup: Will be created if existing templates found"
     echo
     read -p "Proceed with installation? (y/n): " -n 1 -r
     echo
@@ -323,7 +295,6 @@ confirm_installation() {
     fi
 }
 
-# Main execution
 main() {
     echo "================================================================================"
     echo "  HestiaCP Nginx Python Templates Installer"
@@ -331,33 +302,15 @@ main() {
     echo "================================================================================"
     echo
     
-    # Check if running as root
     check_root
-    
-    # Detect OS and version
     detect_os
-    
-    # Validate OS compatibility
     validate_os_compatibility
-    
-    # Check if HestiaCP is installed
     check_hestia_installation
-    
-    # Check if template files exist
     check_template_files
-    
-    # Confirm installation
     confirm_installation
-    
-    # Perform installation steps
     create_target_directory
     backup_existing_templates
     install_templates
     verify_installation
-    
-    # Show instructions
     show_post_install_instructions
 }
-
-# Run main function
-main
