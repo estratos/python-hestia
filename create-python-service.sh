@@ -44,12 +44,114 @@ check_root() {
     fi
 }
 
-list_hestia_domains() {
-    print_status "Fetching HestiaCP domains..."
+list_hestia_users() {
+    print_status "Fetching HestiaCP users..."
+    
+    USERS=()
+    if [[ -d "/home" ]]; then
+        for user_dir in /home/*; do
+            if [[ -d "$user_dir" ]]; then
+                username=$(basename "$user_dir")
+                # Check if this user has web directory structure (HestiaCP user)
+                if [[ -d "/home/$username/web" ]]; then
+                    USERS+=("$username")
+                fi
+            fi
+        done
+    fi
+    
+    if [[ ${#USERS[@]} -eq 0 ]]; then
+        print_warning "No HestiaCP users found in /home/*/web"
+        return 1
+    fi
+    
+    echo
+    echo "Available HestiaCP users:"
+    echo "----------------------------------------"
+    for i in "${!USERS[@]}"; do
+        echo "$((i+1)). ${USERS[$i]}"
+    done
+    echo "----------------------------------------"
+    
+    return 0
+}
+
+select_user() {
+    echo
+    print_prompt "Select the HestiaCP user that owns the domain"
+    
+    if list_hestia_users; then
+        read -p "Enter number (1-${#USERS[@]}) or enter custom username: " USER_CHOICE
+        
+        # Check if input is a number
+        if [[ "$USER_CHOICE" =~ ^[0-9]+$ ]]; then
+            if [[ $USER_CHOICE -ge 1 ]] && [[ $USER_CHOICE -le ${#USERS[@]} ]]; then
+                SELECTED_USER="${USERS[$((USER_CHOICE-1))]}"
+                print_success "Selected user: $SELECTED_USER"
+                return 0
+            else
+                print_error "Invalid selection number"
+                return 1
+            fi
+        else
+            # Custom username
+            if [[ -n "$USER_CHOICE" ]]; then
+                SELECTED_USER="$USER_CHOICE"
+                if id "$SELECTED_USER" &>/dev/null; then
+                    print_success "Using user: $SELECTED_USER"
+                else
+                    print_warning "User $SELECTED_USER does not exist"
+                    read -p "Create user $SELECTED_USER? (y/n): " -n 1 -r
+                    echo
+                    if [[ $REPLY =~ ^[Yy]$ ]]; then
+                        useradd -m -s /bin/bash "$SELECTED_USER"
+                        print_success "Created user: $SELECTED_USER"
+                    else
+                        print_error "User does not exist. Please create it first."
+                        return 1
+                    fi
+                fi
+                return 0
+            else
+                print_error "No user specified"
+                return 1
+            fi
+        fi
+    else
+        # No users found, ask for custom user
+        read -p "Enter the username that owns the domain: " SELECTED_USER
+        if [[ -z "$SELECTED_USER" ]]; then
+            print_error "No user specified"
+            return 1
+        fi
+        
+        if id "$SELECTED_USER" &>/dev/null; then
+            print_success "Using user: $SELECTED_USER"
+        else
+            print_warning "User $SELECTED_USER does not exist"
+            read -p "Create user $SELECTED_USER? (y/n): " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                useradd -m -s /bin/bash "$SELECTED_USER"
+                print_success "Created user: $SELECTED_USER"
+            else
+                print_error "User does not exist. Please create it first."
+                return 1
+            fi
+        fi
+        return 0
+    fi
+}
+
+list_domains_for_user() {
+    local user="$1"
+    local user_home="/home/$user"
+    
+    print_status "Fetching domains for user: $user"
     
     DOMAINS=()
-    if [[ -d "/home/admin/web" ]]; then
-        for domain in /home/admin/web/*; do
+    if [[ -d "$user_home/web" ]]; then
+        for domain in "$user_home/web"/*; do
             if [[ -d "$domain" ]]; then
                 domain_name=$(basename "$domain")
                 # Skip system directories
@@ -61,12 +163,12 @@ list_hestia_domains() {
     fi
     
     if [[ ${#DOMAINS[@]} -eq 0 ]]; then
-        print_warning "No domains found in /home/admin/web/"
+        print_warning "No domains found for user $user in $user_home/web/"
         return 1
     fi
     
     echo
-    echo "Available domains in HestiaCP:"
+    echo "Available domains for user $user:"
     echo "----------------------------------------"
     for i in "${!DOMAINS[@]}"; do
         echo "$((i+1)). ${DOMAINS[$i]}"
@@ -77,8 +179,10 @@ list_hestia_domains() {
 }
 
 select_domain() {
+    local user="$1"
+    
     echo
-    print_prompt "Select a domain from the list above, or choose custom path"
+    print_prompt "Select a domain or specify custom path"
     echo "Options:"
     echo "  - Enter number (1-${#DOMAINS[@]}) to select a domain"
     echo "  - Enter 'c' to specify a custom absolute path"
@@ -91,7 +195,7 @@ select_domain() {
         [0-9]*)
             if [[ $DOMAIN_CHOICE -ge 1 ]] && [[ $DOMAIN_CHOICE -le ${#DOMAINS[@]} ]]; then
                 SELECTED_DOMAIN="${DOMAINS[$((DOMAIN_CHOICE-1))]}"
-                APP_PATH="/home/admin/web/$SELECTED_DOMAIN/private/python_app"
+                APP_PATH="/home/$user/web/$SELECTED_DOMAIN/private/python_app"
                 SERVICE_NAME="${SELECTED_DOMAIN}_python"
                 print_success "Selected domain: $SELECTED_DOMAIN"
                 print_file "Application path: $APP_PATH"
@@ -119,9 +223,9 @@ select_domain() {
 select_custom_path() {
     echo
     print_prompt "Enter the absolute path to your Python application directory"
-    echo "Example: /home/admin/web/example.com/private/python_app"
-    echo "         /opt/myapp"
-    echo "         /var/www/myapp"
+    echo "Examples: /home/admin/web/example.com/private/python_app"
+    echo "          /opt/myapp"
+    echo "          /var/www/myapp"
     echo
     
     read -p "Absolute path: " CUSTOM_PATH
@@ -137,6 +241,9 @@ select_custom_path() {
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             mkdir -p "$CUSTOM_PATH"
+            if [[ -n "$SELECTED_USER" ]]; then
+                chown "$SELECTED_USER:$SELECTED_USER" "$CUSTOM_PATH"
+            fi
             print_success "Created directory: $CUSTOM_PATH"
         else
             print_error "Directory does not exist. Please create it first."
@@ -276,6 +383,9 @@ configure_virtualenv() {
                 echo
                 if [[ $REPLY =~ ^[Yy]$ ]]; then
                     python3 -m venv "$VENV_PATH"
+                    if [[ -n "$SELECTED_USER" ]]; then
+                        chown -R "$SELECTED_USER:$SELECTED_USER" "$VENV_PATH"
+                    fi
                     print_success "Created virtual environment: $VENV_PATH"
                 else
                     print_warning "Continuing without virtual environment"
@@ -313,6 +423,9 @@ configure_working_directory() {
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             mkdir -p "$WORKING_DIR"
+            if [[ -n "$SELECTED_USER" ]]; then
+                chown "$SELECTED_USER:$SELECTED_USER" "$WORKING_DIR"
+            fi
             print_success "Created working directory"
         fi
     fi
@@ -320,14 +433,15 @@ configure_working_directory() {
     print_success "Working directory: $WORKING_DIR"
 }
 
-configure_user() {
+configure_service_user() {
     echo
     print_prompt "Select user to run the service"
     echo "Common options: admin, www-data, root"
-    read -p "User [default: admin]: " SERVICE_USER
+    echo "Default will use the HestiaCP user: $SELECTED_USER"
+    read -p "Service user [default: $SELECTED_USER]: " SERVICE_USER
     
     if [[ -z "$SERVICE_USER" ]]; then
-        SERVICE_USER="admin"
+        SERVICE_USER="$SELECTED_USER"
     fi
     
     # Validate user exists
@@ -461,13 +575,14 @@ confirm_and_create() {
     print_status "Service Configuration Summary"
     echo "================================================================================"
     echo
+    echo "HestiaCP User: $SELECTED_USER"
     echo "Service Name: ${SERVICE_NAME}_python"
     echo "Application Path: $APP_PATH"
     echo "Working Directory: $WORKING_DIR"
     echo "Startup Command: $START_SCRIPT"
     echo "Port: $PORT"
     [[ -n "$VENV_PATH" ]] && echo "Virtual Environment: $VENV_PATH"
-    echo "User: $SERVICE_USER"
+    echo "Service User: $SERVICE_USER"
     echo "Log Directory: $LOG_DIR"
     echo
     echo "Systemd Service File: /etc/systemd/system/${SERVICE_NAME}_python.service"
@@ -518,9 +633,14 @@ main() {
     
     check_root
     
-    # Try to list Hestia domains first
-    if list_hestia_domains; then
-        while ! select_domain; do
+    # Select HestiaCP user
+    while ! select_user; do
+        print_status "Please try again"
+    done
+    
+    # List domains for selected user
+    if list_domains_for_user "$SELECTED_USER"; then
+        while ! select_domain "$SELECTED_USER"; do
             print_status "Please try again"
         done
     else
@@ -531,7 +651,7 @@ main() {
     configure_port
     configure_virtualenv
     configure_working_directory
-    configure_user
+    configure_service_user
     configure_logging
     confirm_and_create
 }
