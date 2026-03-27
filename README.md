@@ -35,7 +35,7 @@ A complete solution to run Python web applications on Hestia Control Panel. This
 ### Method 1: Automated Installation
 
 ```bash
-wget https://raw.githubusercontent.com/estratos/python-hestia/main/install-python-template.sh
+wget https://github.com/estratos/python-hestia/blob/main/install-python-templates.sh
 chmod +x install-python-template.sh
 sudo ./install-python-template.sh
 ```
