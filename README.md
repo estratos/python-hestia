@@ -296,3 +296,241 @@ Include:
 - Contributors
 
 **Important:** Always test in a development environment before deploying to production.
+
+# Python Application Service Creator for HestiaCP
+
+A standalone script to create systemd services for Python applications running with HestiaCP's python-app Nginx template.
+
+## Overview
+
+This script creates a systemd service that manages your Python application as a background service. It automatically configures the service to work with the python-app Nginx template, handling port configuration, virtual environments, logging, and security hardening.
+
+## Features
+
+- Domain Integration: Automatically detects and lists HestiaCP domains
+- Custom Path Support: Works with any absolute path, not just Hestia domains
+- Automatic Detection: Identifies common Python application files (app.py, run.py, main.py, etc.)
+- Virtual Environment Support: Detects and configures existing virtual environments or creates new ones
+- Port Configuration: Interactive port selection with validation
+- User Management: Choose which system user runs the service
+- Logging Setup: Automatic log directory creation with proper permissions
+- Security Hardening: Implements systemd security features (PrivateTmp, ProtectSystem, etc.)
+- Service Management: Provides commands for starting, stopping, and monitoring the service
+
+## Requirements
+
+- HestiaCP installed (optional, for domain integration)
+- Python 3.6+ installed
+- Root or sudo access
+- systemd (standard on Ubuntu 22.04/24.04 and Debian 11/12)
+
+## Installation
+
+Download and make the script executable:
+
+```bash
+wget https://raw.githubusercontent.com/estratos/python-hestia/main/create-python-service.sh
+chmod +x create-python-service.sh
+```
+
+## Usage
+
+Run the script as root:
+
+```bash
+sudo ./create-python-service.sh
+```
+
+## Interactive Prompts
+
+The script guides you through the configuration process:
+
+### Select Domain or Custom Path
+
+- Choose from a list of HestiaCP domains
+- Or enter `c` to specify a custom path
+
+### Startup Script Detection
+
+- Automatically detects files like:
+  - `app.py`
+  - `run.py`
+  - `main.py`
+- Or manually define your command
+
+### Port Configuration
+
+- Define the port your app will run on
+- Must match Nginx template configuration
+
+### Virtual Environment
+
+- Detects existing environments (`venv`, `.venv`, `env`)
+- Option to create a new one
+
+### Working Directory
+
+- Defaults to app path
+- Can be customized
+
+### Service User
+
+- Choose user (`admin`, `www-data`, `root`, custom)
+- Script validates existence
+
+### Logging
+
+- Default: `application_path/logs`
+- Creates access and error logs
+
+### Confirmation
+
+- Review settings before creation
+- Option to start service immediately
+- Option to enable auto-start
+
+## Service Management
+
+### Start
+
+```bash
+sudo systemctl start domain_python
+```
+
+### Stop
+
+```bash
+sudo systemctl stop domain_python
+```
+
+### Restart
+
+```bash
+sudo systemctl restart domain_python
+```
+
+### Status
+
+```bash
+sudo systemctl status domain_python
+```
+
+### Logs
+
+```bash
+sudo journalctl -u domain_python -f
+```
+
+### Enable Auto-Start
+
+```bash
+sudo systemctl enable domain_python
+```
+
+### Disable Auto-Start
+
+```bash
+sudo systemctl disable domain_python
+```
+
+## Service File Structure
+
+The generated service includes:
+
+- WorkingDirectory
+- User / Group
+- Environment variables
+- ExecStart command
+- Restart policy
+- Security hardening:
+  - NoNewPrivileges
+  - PrivateTmp
+  - ProtectSystem
+  - ProtectHome
+- ReadWritePaths restrictions
+
+## Example Service Configuration
+
+```ini
+[Unit]
+Description=Python Application for example.com
+After=network.target
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+WorkingDirectory=/home/admin/web/example.com/private/python_app
+Environment="PATH=/home/admin/web/example.com/.python-venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+
+ExecStart=/home/admin/web/example.com/.python-venv/bin/gunicorn --bind 127.0.0.1:8000 wsgi:application
+
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/home/admin/web/example.com/private/python_app /home/admin/web/example.com/logs/python
+
+[Install]
+WantedBy=multi-user.target
+```
+
+## Integration with HestiaCP
+
+- Ensure service is running
+- Select `python-app` template in HestiaCP
+- Nginx will proxy to your app
+
+## Troubleshooting
+
+### Service Not Starting
+
+```bash
+sudo systemctl status domain_python
+sudo journalctl -u domain_python -n 50
+```
+
+### Port Already in Use
+
+- Change port in:
+  - Service config
+  - Nginx template
+
+### Permission Issues
+
+```bash
+sudo chown -R user:group /path/to/app
+sudo chmod -R 755 /path/to/app
+```
+
+### Virtual Environment Issues
+
+```bash
+source /path/to/venv/bin/activate
+python app.py
+```
+
+## Uninstallation
+
+```bash
+sudo systemctl stop domain_python
+sudo systemctl disable domain_python
+sudo rm /etc/systemd/system/domain_python.service
+sudo systemctl daemon-reload
+```
+
+## Script Options
+
+- Fully interactive
+- No CLI arguments required
+
+## Important Notes
+
+- Ensure service user has proper permissions
+- Default port is 8000
+- Use Gunicorn or uWSGI in production
+- Adjust `ReadWritePaths` if needed
