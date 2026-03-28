@@ -1,6 +1,7 @@
 #!/bin/bash
 # Interactive script to create systemd service for Python applications in HestiaCP
 # Supports: Ubuntu 22.04, Ubuntu 24.04, and Debian (11, 12)
+# Creates app.sh template if it doesn't exist
 
 set -e
 
@@ -52,7 +53,6 @@ list_hestia_users() {
         for user_dir in /home/*; do
             if [[ -d "$user_dir" ]]; then
                 username=$(basename "$user_dir")
-                # Check if this user has web directory structure (HestiaCP user)
                 if [[ -d "/home/$username/web" ]]; then
                     USERS+=("$username")
                 fi
@@ -61,7 +61,6 @@ list_hestia_users() {
     fi
     
     if [[ ${#USERS[@]} -eq 0 ]]; then
-        print_warning "No HestiaCP users found in /home/*/web"
         return 1
     fi
     
@@ -83,7 +82,6 @@ select_user() {
     if list_hestia_users; then
         read -p "Enter number (1-${#USERS[@]}) or enter custom username: " USER_CHOICE
         
-        # Check if input is a number
         if [[ "$USER_CHOICE" =~ ^[0-9]+$ ]]; then
             if [[ $USER_CHOICE -ge 1 ]] && [[ $USER_CHOICE -le ${#USERS[@]} ]]; then
                 SELECTED_USER="${USERS[$((USER_CHOICE-1))]}"
@@ -94,7 +92,6 @@ select_user() {
                 return 1
             fi
         else
-            # Custom username
             if [[ -n "$USER_CHOICE" ]]; then
                 SELECTED_USER="$USER_CHOICE"
                 if id "$SELECTED_USER" &>/dev/null; then
@@ -118,7 +115,6 @@ select_user() {
             fi
         fi
     else
-        # No users found, ask for custom user
         read -p "Enter the username that owns the domain: " SELECTED_USER
         if [[ -z "$SELECTED_USER" ]]; then
             print_error "No user specified"
@@ -154,7 +150,6 @@ list_domains_for_user() {
         for domain in "$user_home/web"/*; do
             if [[ -d "$domain" ]]; then
                 domain_name=$(basename "$domain")
-                # Skip system directories
                 if [[ "$domain_name" != "stats" ]] && [[ "$domain_name" != "default" ]]; then
                     DOMAINS+=("$domain_name")
                 fi
@@ -195,8 +190,36 @@ select_domain() {
         [0-9]*)
             if [[ $DOMAIN_CHOICE -ge 1 ]] && [[ $DOMAIN_CHOICE -le ${#DOMAINS[@]} ]]; then
                 SELECTED_DOMAIN="${DOMAINS[$((DOMAIN_CHOICE-1))]}"
-                APP_PATH="/home/$user/web/$SELECTED_DOMAIN/private/python_app"
-                SERVICE_NAME="${SELECTED_DOMAIN}_python"
+                
+                # Look for application subdirectory
+                local base_path="/home/$user/web/$SELECTED_DOMAIN/private"
+                local app_subdir=""
+                
+                # Check common subdirectory names
+                if [[ -d "$base_path/python_app" ]]; then
+                    app_subdir="python_app"
+                elif [[ -d "$base_path/pandora" ]]; then
+                    app_subdir="pandora"
+                elif [[ -d "$base_path/app" ]]; then
+                    app_subdir="app"
+                elif [[ -d "$base_path/application" ]]; then
+                    app_subdir="application"
+                else
+                    # Ask user for subdirectory
+                    echo
+                    print_prompt "Available directories in $base_path:"
+                    ls -la "$base_path" 2>/dev/null | grep '^d' | awk '{print $9}' | grep -v '^\.\.\?$' || echo "  (none found)"
+                    echo
+                    read -p "Enter the application subdirectory name (e.g., pandora, python_app) or press Enter for base path: " app_subdir
+                fi
+                
+                if [[ -n "$app_subdir" ]]; then
+                    APP_PATH="$base_path/$app_subdir"
+                else
+                    APP_PATH="$base_path"
+                fi
+                
+                SERVICE_NAME="${SELECTED_DOMAIN}"
                 print_success "Selected domain: $SELECTED_DOMAIN"
                 print_file "Application path: $APP_PATH"
                 return 0
@@ -223,7 +246,7 @@ select_domain() {
 select_custom_path() {
     echo
     print_prompt "Enter the absolute path to your Python application directory"
-    echo "Examples: /home/admin/web/example.com/private/python_app"
+    echo "Examples: /home/admin/web/example.com/private/pandora"
     echo "          /opt/myapp"
     echo "          /var/www/myapp"
     echo
@@ -252,72 +275,106 @@ select_custom_path() {
     fi
     
     APP_PATH="$CUSTOM_PATH"
-    SERVICE_NAME=$(basename "$CUSTOM_PATH" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g')
+    SERVICE_NAME=$(basename "$(dirname "$APP_PATH")" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g')
     print_success "Using custom path: $APP_PATH"
-    print_file "Service name will be: ${SERVICE_NAME}_python"
     
     return 0
 }
 
-detect_start_script() {
-    print_status "Detecting Python application files..."
+detect_or_create_app_sh() {
+    print_status "Checking for app.sh in $APP_PATH..."
     
-    START_SCRIPT=""
+    APP_SH_PATH="$APP_PATH/app.sh"
     
-    # Common Python application file names
-    COMMON_SCRIPTS=("app.py" "run.py" "main.py" "application.py" "wsgi.py" "manage.py" "start.py")
-    
-    echo "Files found in $APP_PATH:"
-    echo "----------------------------------------"
-    ls -la "$APP_PATH" 2>/dev/null | grep -E "\.(py|sh)$" || echo "No Python or shell scripts found"
-    echo "----------------------------------------"
-    echo
-    
-    # Try to detect automatically
-    for script in "${COMMON_SCRIPTS[@]}"; do
-        if [[ -f "$APP_PATH/$script" ]]; then
-            START_SCRIPT="$APP_PATH/$script"
-            print_success "Detected: $START_SCRIPT"
-            break
-        fi
-    done
-    
-    if [[ -z "$START_SCRIPT" ]]; then
-        print_warning "Could not automatically detect a Python application file"
-        echo
-        print_prompt "Please specify the startup script or command"
-        echo "Examples:"
-        echo "  - Python script: /path/to/app.py"
-        echo "  - Shell script: /path/to/start.sh"
-        echo "  - Command: gunicorn --bind 127.0.0.1:8000 wsgi:application"
-        echo
-        
-        read -p "Startup script/command: " USER_SCRIPT
-        
-        if [[ -z "$USER_SCRIPT" ]]; then
-            print_error "No startup script specified"
-            return 1
-        fi
-        
-        START_SCRIPT="$USER_SCRIPT"
-    fi
-    
-    # Determine script type
-    if [[ -f "$START_SCRIPT" ]]; then
-        if [[ "$START_SCRIPT" == *.sh ]]; then
+    if [[ -f "$APP_SH_PATH" ]]; then
+        print_success "Found existing app.sh: $APP_SH_PATH"
+        read -p "Use existing app.sh? (y/n) [default: y]: " USE_EXISTING
+        if [[ ! $USE_EXISTING =~ ^[Nn]$ ]]; then
+            START_SCRIPT="$APP_SH_PATH"
             SCRIPT_TYPE="shell"
-            print_success "Shell script detected: $START_SCRIPT"
-        elif [[ "$START_SCRIPT" == *.py ]]; then
-            SCRIPT_TYPE="python"
-            print_success "Python script detected: $START_SCRIPT"
-        else
-            SCRIPT_TYPE="custom"
-            print_success "Custom script: $START_SCRIPT"
+            print_success "Will use existing app.sh"
+            return 0
         fi
-    else
-        SCRIPT_TYPE="command"
-        print_success "Command: $START_SCRIPT"
     fi
+    
+    # Create app.sh template
+    print_status "Creating app.sh template..."
+    
+    # Detect Python entry point
+    PYTHON_ENTRY=""
+    if [[ -f "$APP_PATH/run.py" ]]; then
+        PYTHON_ENTRY="run.py"
+    elif [[ -f "$APP_PATH/app.py" ]]; then
+        PYTHON_ENTRY="app.py"
+    elif [[ -f "$APP_PATH/main.py" ]]; then
+        PYTHON_ENTRY="main.py"
+    elif [[ -f "$APP_PATH/wsgi.py" ]]; then
+        PYTHON_ENTRY="wsgi.py"
+    fi
+    
+    cat > "$APP_SH_PATH" << 'EOF'
+#!/bin/bash
+# app.sh - Startup script for Python application
+# Created by HestiaCP Python Service Creator
+
+set -e
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Change to the script directory
+cd "$SCRIPT_DIR"
+
+# Set Python path to include current directory
+export PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH}"
+
+# Activate virtual environment if it exists
+if [[ -d "venv" ]]; then
+    source venv/bin/activate
+    echo "Virtual environment activated: venv"
+elif [[ -d ".venv" ]]; then
+    source .venv/bin/activate
+    echo "Virtual environment activated: .venv"
+elif [[ -d "../.python-venv" ]]; then
+    source ../.python-venv/bin/activate
+    echo "Virtual environment activated: ../.python-venv"
+fi
+
+# Determine which Python file to run
+PYTHON_SCRIPT=""
+if [[ -f "run.py" ]]; then
+    PYTHON_SCRIPT="run.py"
+elif [[ -f "app.py" ]]; then
+    PYTHON_SCRIPT="app.py"
+elif [[ -f "main.py" ]]; then
+    PYTHON_SCRIPT="main.py"
+elif [[ -f "wsgi.py" ]]; then
+    PYTHON_SCRIPT="wsgi.py"
+else
+    echo "ERROR: No Python application file found (run.py, app.py, main.py, wsgi.py)"
+    exit 1
+fi
+
+echo "Starting Python application: $PYTHON_SCRIPT"
+
+# Execute Python script with all passed arguments
+exec python3 "$PYTHON_SCRIPT" "$@"
+EOF
+    
+    # If we detected a specific Python entry point, customize the script
+    if [[ -n "$PYTHON_ENTRY" ]]; then
+        sed -i "s|PYTHON_SCRIPT=\"\"|PYTHON_SCRIPT=\"$PYTHON_ENTRY\"|" "$APP_SH_PATH"
+        sed -i "s|if \[\[ -f \"run\.py\" \]\]; then|if [[ -f \"$PYTHON_ENTRY\" ]]; then|" "$APP_SH_PATH"
+    fi
+    
+    chmod +x "$APP_SH_PATH"
+    chown "$SELECTED_USER:$SELECTED_USER" "$APP_SH_PATH"
+    
+    print_success "Created app.sh at $APP_SH_PATH"
+    print_success "Made app.sh executable"
+    
+    START_SCRIPT="$APP_SH_PATH"
+    SCRIPT_TYPE="shell"
     
     return 0
 }
@@ -325,6 +382,7 @@ detect_start_script() {
 configure_port() {
     echo
     print_prompt "Configure the port your Python application will run on"
+    echo "This should match the port in your Nginx template (python-app)"
     read -p "Port number [default: 8000]: " USER_PORT
     
     if [[ -z "$USER_PORT" ]]; then
@@ -403,70 +461,11 @@ configure_virtualenv() {
     fi
 }
 
-configure_working_directory() {
-    print_status "Working directory configuration"
-    
-    read -p "Use custom working directory? (y/n) [default: n]: " USE_CUSTOM_WD
-    
-    if [[ $USE_CUSTOM_WD =~ ^[Yy]$ ]]; then
-        read -p "Working directory path: " WORKING_DIR
-        if [[ -z "$WORKING_DIR" ]]; then
-            WORKING_DIR="$APP_PATH"
-        fi
-    else
-        WORKING_DIR="$APP_PATH"
-    fi
-    
-    if [[ ! -d "$WORKING_DIR" ]]; then
-        print_warning "Working directory does not exist: $WORKING_DIR"
-        read -p "Create it? (y/n): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            mkdir -p "$WORKING_DIR"
-            if [[ -n "$SELECTED_USER" ]]; then
-                chown "$SELECTED_USER:$SELECTED_USER" "$WORKING_DIR"
-            fi
-            print_success "Created working directory"
-        fi
-    fi
-    
-    print_success "Working directory: $WORKING_DIR"
-}
-
-configure_service_user() {
-    echo
-    print_prompt "Select user to run the service"
-    echo "Common options: admin, www-data, root"
-    echo "Default will use the HestiaCP user: $SELECTED_USER"
-    read -p "Service user [default: $SELECTED_USER]: " SERVICE_USER
-    
-    if [[ -z "$SERVICE_USER" ]]; then
-        SERVICE_USER="$SELECTED_USER"
-    fi
-    
-    # Validate user exists
-    if ! id "$SERVICE_USER" &>/dev/null; then
-        print_warning "User $SERVICE_USER does not exist"
-        read -p "Create user? (y/n): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            useradd -m -s /bin/bash "$SERVICE_USER"
-            print_success "Created user: $SERVICE_USER"
-        else
-            print_error "User does not exist. Using root instead."
-            SERVICE_USER="root"
-        fi
-    fi
-    
-    SERVICE_GROUP="$SERVICE_USER"
-    print_success "Service will run as: $SERVICE_USER:$SERVICE_GROUP"
-}
-
 configure_logging() {
     echo
     print_prompt "Configure logging"
     
-    LOG_DIR="$WORKING_DIR/logs"
+    LOG_DIR="$APP_PATH/logs"
     read -p "Log directory [default: $LOG_DIR]: " USER_LOG_DIR
     
     if [[ -n "$USER_LOG_DIR" ]]; then
@@ -474,21 +473,18 @@ configure_logging() {
     fi
     
     mkdir -p "$LOG_DIR"
-    chown -R "$SERVICE_USER:$SERVICE_GROUP" "$LOG_DIR" 2>/dev/null || true
+    chown -R "$SELECTED_USER:$SELECTED_USER" "$LOG_DIR" 2>/dev/null || true
     
-    ACCESS_LOG="$LOG_DIR/access.log"
-    ERROR_LOG="$LOG_DIR/error.log"
-    
-    print_success "Access log: $ACCESS_LOG"
-    print_success "Error log: $ERROR_LOG"
+    print_success "Log directory: $LOG_DIR"
 }
 
 create_service_file() {
-    SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}_python.service"
+    SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
     
     print_status "Creating systemd service file..."
     print_file "$SERVICE_FILE"
     
+    # Create the exact service structure you specified
     cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=Python Application for ${SERVICE_NAME}
@@ -496,27 +492,12 @@ After=network.target
 
 [Service]
 Type=simple
-User=${SERVICE_USER}
-Group=${SERVICE_GROUP}
-WorkingDirectory=${WORKING_DIR}
-EOF
-
-    # Add virtual environment activation if used
-    if [[ -n "$VENV_PATH" ]]; then
-        cat >> "$SERVICE_FILE" << EOF
-Environment="PATH=${VENV_PATH}/bin:/usr/local/bin:/usr/bin:/bin"
-EOF
-    fi
-    
-    # Add environment variables section
-    cat >> "$SERVICE_FILE" << EOF
+User=${SELECTED_USER}
+Group=${SELECTED_USER}
+WorkingDirectory=${APP_PATH}
 Environment="PYTHONUNBUFFERED=1"
 
-EOF
-    
-    # Add ExecStart based on script type
-    cat >> "$SERVICE_FILE" << EOF
-ExecStart=${START_SCRIPT}
+ExecStart=${APP_PATH}/app.sh
 Restart=always
 RestartSec=5
 
@@ -524,14 +505,15 @@ RestartSec=5
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
-ProtectHome=yes
-ReadWritePaths=${WORKING_DIR} ${LOG_DIR}
+# ProtectHome=yes  # REMOVED - was blocking access to /home
+ReadWritePaths=${APP_PATH} ${LOG_DIR}
 
 [Install]
 WantedBy=multi-user.target
 EOF
     
     print_success "Created service file: $SERVICE_FILE"
+    print_success "Service name: $SERVICE_NAME"
 }
 
 show_service_details() {
@@ -541,30 +523,32 @@ show_service_details() {
     echo "================================================================================"
     echo
     echo "Service Details:"
-    echo "  Name: ${SERVICE_NAME}_python"
-    echo "  Working Directory: $WORKING_DIR"
-    echo "  Startup Command: $START_SCRIPT"
+    echo "  Name: $SERVICE_NAME"
+    echo "  Working Directory: $APP_PATH"
+    echo "  Startup Script: $APP_PATH/app.sh"
     echo "  Port: $PORT"
     [[ -n "$VENV_PATH" ]] && echo "  Virtual Environment: $VENV_PATH"
-    echo "  User: $SERVICE_USER"
+    echo "  User: $SELECTED_USER"
     echo "  Log Directory: $LOG_DIR"
     echo
     echo "Service Management Commands:"
-    echo "  Start:   systemctl start ${SERVICE_NAME}_python"
-    echo "  Stop:    systemctl stop ${SERVICE_NAME}_python"
-    echo "  Restart: systemctl restart ${SERVICE_NAME}_python"
-    echo "  Status:  systemctl status ${SERVICE_NAME}_python"
-    echo "  Logs:    journalctl -u ${SERVICE_NAME}_python -f"
+    echo "  Start:   systemctl start $SERVICE_NAME"
+    echo "  Stop:    systemctl stop $SERVICE_NAME"
+    echo "  Restart: systemctl restart $SERVICE_NAME"
+    echo "  Status:  systemctl status $SERVICE_NAME"
+    echo "  Logs:    journalctl -u $SERVICE_NAME -f"
     echo
     echo "To enable auto-start on boot:"
-    echo "  systemctl enable ${SERVICE_NAME}_python"
+    echo "  systemctl enable $SERVICE_NAME"
     echo
     echo "To disable auto-start on boot:"
-    echo "  systemctl disable ${SERVICE_NAME}_python"
+    echo "  systemctl disable $SERVICE_NAME"
     echo
     echo "Nginx Template:"
     echo "  Make sure to select 'python-app' template in HestiaCP for your domain"
     echo "  The template proxies to port $PORT"
+    echo
+    echo "IMPORTANT: ProtectHome=yes is NOT enabled to allow access to /home directory"
     echo
     echo "================================================================================"
 }
@@ -575,17 +559,15 @@ confirm_and_create() {
     print_status "Service Configuration Summary"
     echo "================================================================================"
     echo
-    echo "HestiaCP User: $SELECTED_USER"
-    echo "Service Name: ${SERVICE_NAME}_python"
+    echo "Service Name: $SERVICE_NAME"
     echo "Application Path: $APP_PATH"
-    echo "Working Directory: $WORKING_DIR"
-    echo "Startup Command: $START_SCRIPT"
+    echo "Startup Script: $APP_PATH/app.sh"
     echo "Port: $PORT"
     [[ -n "$VENV_PATH" ]] && echo "Virtual Environment: $VENV_PATH"
-    echo "Service User: $SERVICE_USER"
+    echo "User: $SELECTED_USER"
     echo "Log Directory: $LOG_DIR"
     echo
-    echo "Systemd Service File: /etc/systemd/system/${SERVICE_NAME}_python.service"
+    echo "Systemd Service File: /etc/systemd/system/${SERVICE_NAME}.service"
     echo
     echo "================================================================================"
     echo
@@ -604,11 +586,13 @@ confirm_and_create() {
     read -p "Start service now? (y/n): " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        systemctl start "${SERVICE_NAME}_python"
+        systemctl start "$SERVICE_NAME"
         print_success "Service started"
         
         sleep 2
-        systemctl status "${SERVICE_NAME}_python" --no-pager
+        echo
+        print_status "Service status:"
+        systemctl status "$SERVICE_NAME" --no-pager || true
     else
         print_status "Service created but not started"
     fi
@@ -616,7 +600,7 @@ confirm_and_create() {
     read -p "Enable service on boot? (y/n): " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        systemctl enable "${SERVICE_NAME}_python"
+        systemctl enable "$SERVICE_NAME"
         print_success "Service enabled on boot"
     fi
     
@@ -628,6 +612,7 @@ main() {
     echo "  HestiaCP Python Application Service Creator"
     echo "  Creates systemd service for Python applications"
     echo "  Supports: Ubuntu 22.04/24.04 | Debian 11/12"
+    echo "  Creates app.sh template if it doesn't exist"
     echo "================================================================================"
     echo
     
@@ -647,11 +632,28 @@ main() {
         select_custom_path
     fi
     
-    detect_start_script
+    # Ensure directory exists
+    if [[ ! -d "$APP_PATH" ]]; then
+        print_warning "Directory does not exist: $APP_PATH"
+        read -p "Create directory? (y/n): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            mkdir -p "$APP_PATH"
+            if [[ -n "$SELECTED_USER" ]]; then
+                chown "$SELECTED_USER:$SELECTED_USER" "$APP_PATH"
+            fi
+            print_success "Created directory: $APP_PATH"
+        else
+            print_error "Directory does not exist. Please create it first."
+            exit 1
+        fi
+    fi
+    
+    # Detect or create app.sh
+    detect_or_create_app_sh
+    
     configure_port
     configure_virtualenv
-    configure_working_directory
-    configure_service_user
     configure_logging
     confirm_and_create
 }
