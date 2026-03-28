@@ -683,7 +683,7 @@ RestartSec=5
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
-ProtectHome=yes
+#ProtectHome=yes
 ReadWritePaths=${WORKING_DIR} ${LOG_DIR}
 
 [Install]
