@@ -173,6 +173,131 @@ list_domains_for_user() {
     return 0
 }
 
+select_custom_path() {
+    echo
+    print_prompt "Enter the absolute path to your Python application directory"
+    echo "Examples: /home/admin/web/example.com/private/myapp"
+    echo "          /opt/myapp"
+    echo "          /var/www/myapp"
+    echo
+    
+    read -p "Absolute path: " CUSTOM_PATH
+    
+    if [[ -z "$CUSTOM_PATH" ]]; then
+        print_error "Path cannot be empty"
+        return 1
+    fi
+    
+    if [[ ! -d "$CUSTOM_PATH" ]]; then
+        print_warning "Directory does not exist: $CUSTOM_PATH"
+        read -p "Create directory? (y/n): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            mkdir -p "$CUSTOM_PATH"
+            if [[ -n "$SELECTED_USER" ]]; then
+                chown "$SELECTED_USER:$SELECTED_USER" "$CUSTOM_PATH"
+            fi
+            print_success "Created directory: $CUSTOM_PATH"
+        else
+            print_error "Directory does not exist. Please create it first."
+            return 1
+        fi
+    fi
+    
+    APP_PATH="$CUSTOM_PATH"
+    SERVICE_NAME=$(basename "$CUSTOM_PATH" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g')
+    print_success "Using custom path: $APP_PATH"
+    print_file "Service name will be: ${SERVICE_NAME}"
+    
+    return 0
+}
+
+scan_for_applications() {
+    print_status "Scanning for Python applications..."
+    
+    local found_apps=()
+    local base_path="/home/$SELECTED_USER/web/$SELECTED_DOMAIN/private"
+    
+    if [[ -d "$base_path" ]]; then
+        for app_dir in "$base_path"/*; do
+            if [[ -d "$app_dir" ]]; then
+                if ls "$app_dir"/*.py &>/dev/null 2>&1; then
+                    found_apps+=("$(basename "$app_dir")")
+                fi
+            fi
+        done
+    fi
+    
+    if [[ ${#found_apps[@]} -eq 0 ]]; then
+        print_warning "No Python applications found in $base_path"
+        select_custom_path
+        return $?
+    fi
+    
+    echo
+    echo "Found Python applications:"
+    echo "----------------------------------------"
+    for i in "${!found_apps[@]}"; do
+        echo "$((i+1)). ${found_apps[$i]}"
+    done
+    echo "----------------------------------------"
+    echo
+    
+    read -p "Select application number or enter 'c' for custom path: " APP_CHOICE
+    
+    if [[ "$APP_CHOICE" =~ ^[0-9]+$ ]] && [[ $APP_CHOICE -ge 1 ]] && [[ $APP_CHOICE -le ${#found_apps[@]} ]]; then
+        local selected_app="${found_apps[$((APP_CHOICE-1))]}"
+        APP_PATH="$base_path/$selected_app"
+        SERVICE_NAME="${SELECTED_DOMAIN}_${selected_app}"
+        print_success "Selected application: $APP_PATH"
+        return 0
+    elif [[ "$APP_CHOICE" =~ ^[cC]$ ]]; then
+        select_custom_path
+        return $?
+    else
+        print_error "Invalid selection"
+        select_custom_path
+        return $?
+    fi
+}
+
+confirm_or_change_path() {
+    local suggested_path="$1"
+    
+    echo
+    print_prompt "Application path: $suggested_path"
+    echo "Options:"
+    echo "  - Enter 'y' to accept this path"
+    echo "  - Enter 'c' to change to a custom path"
+    echo "  - Enter 's' to scan for existing Python applications"
+    echo
+    
+    read -p "Your choice (y/c/s): " PATH_CHOICE
+    
+    case $PATH_CHOICE in
+        y|Y)
+            APP_PATH="$suggested_path"
+            print_success "Using application path: $APP_PATH"
+            SERVICE_NAME="${SELECTED_DOMAIN}_python"
+            return 0
+            ;;
+        c|C)
+            select_custom_path
+            return $?
+            ;;
+        s|S)
+            scan_for_applications
+            return $?
+            ;;
+        *)
+            print_error "Invalid choice, using default path"
+            APP_PATH="$suggested_path"
+            SERVICE_NAME="${SELECTED_DOMAIN}_python"
+            return 0
+            ;;
+    esac
+}
+
 select_domain_or_path() {
     local user="$1"
     
@@ -214,132 +339,6 @@ select_domain_or_path() {
     esac
 }
 
-confirm_or_change_path() {
-    local suggested_path="$1"
-    
-    echo
-    print_prompt "Application path: $suggested_path"
-    echo "Options:"
-    echo "  - Enter 'y' to accept this path"
-    echo "  - Enter 'c' to change to a custom path"
-    echo "  - Enter 's' to scan for existing Python applications"
-    echo
-    
-    read -p "Your choice (y/c/s): " PATH_CHOICE
-    
-    case $PATH_CHOICE in
-        y|Y)
-            APP_PATH="$suggested_path"
-            print_success "Using application path: $APP_PATH"
-            SERVICE_NAME="${SELECTED_DOMAIN}_python"
-            return 0
-            ;;
-        c|C)
-            select_custom_path
-            return $?
-            ;;
-        s|S)
-            scan_for_applications
-            return $?
-            ;;
-        *)
-            print_error "Invalid choice, using default path"
-            APP_PATH="$suggested_path"
-            SERVICE_NAME="${SELECTED_DOMAIN}_python"
-            return 0
-            ;;
-    esac
-}
-
-scan_for_applications() {
-    print_status "Scanning for Python applications..."
-    
-    local found_apps=()
-    local base_path="/home/$SELECTED_USER/web/$SELECTED_DOMAIN/private"
-    
-    if [[ -d "$base_path" ]]; then
-        for app_dir in "$base_path"/*; do
-            if [[ -d "$app_dir" ]]; then
-                # Check for Python files
-                if ls "$app_dir"/*.py &>/dev/null 2>&1; then
-                    found_apps+=("$(basename "$app_dir")")
-                fi
-            fi
-        done
-    fi
-    
-    if [[ ${#found_apps[@]} -eq 0 ]]; then
-        print_warning "No Python applications found in $base_path"
-        select_custom_path
-        return $?
-    fi
-    
-    echo
-    echo "Found Python applications:"
-    echo "----------------------------------------"
-    for i in "${!found_apps[@]}"; do
-        echo "$((i+1)). ${found_apps[$i]}"
-    done
-    echo "----------------------------------------"
-    echo
-    
-    read -p "Select application number or enter 'c' for custom path: " APP_CHOICE
-    
-    if [[ "$APP_CHOICE" =~ ^[0-9]+$ ]] && [[ $APP_CHOICE -ge 1 ]] && [[ $APP_CHOICE -le ${#found_apps[@]} ]]; then
-        local selected_app="${found_apps[$((APP_CHOICE-1))]}"
-        APP_PATH="$base_path/$selected_app"
-        SERVICE_NAME="${SELECTED_DOMAIN}_${selected_app}"
-        print_success "Selected application: $APP_PATH"
-        return 0
-    elif [[ "$APP_CHOICE" =~ ^[cC]$ ]]; then
-        select_custom_path
-        return $?
-    else
-        print_error "Invalid selection"
-        select_custom_path
-        return $?
-    fi
-}
-
-select_custom_path() {
-    echo
-    print_prompt "Enter the absolute path to your Python application directory"
-    echo "Examples: /home/admin/web/example.com/private/myapp"
-    echo "          /opt/myapp"
-    echo "          /var/www/myapp"
-    echo
-    
-    read -p "Absolute path: " CUSTOM_PATH
-    
-    if [[ -z "$CUSTOM_PATH" ]]; then
-        print_error "Path cannot be empty"
-        return 1
-    fi
-    
-    if [[ ! -d "$CUSTOM_PATH" ]]; then
-        print_warning "Directory does not exist: $CUSTOM_PATH"
-        read -p "Create directory? (y/n): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            mkdir -p "$CUSTOM_PATH"
-            if [[ -n "$SELECTED_USER" ]]; then
-                chown "$SELECTED_USER:$SELECTED_USER" "$CUSTOM_PATH"
-            fi
-            print_success "Created directory: $CUSTOM_PATH"
-        else
-            print_error "Directory does not exist. Please create it first."
-            return 1
-        fi
-    fi
-    
-    APP_PATH="$CUSTOM_PATH"
-    SERVICE_NAME=$(basename "$CUSTOM_PATH" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g')
-    print_success "Using custom path: $APP_PATH"
-    print_file "Service name will be: ${SERVICE_NAME}_python"
-    
-    return 0
-}
-
 detect_start_script() {
     print_status "Detecting Python application files..."
     
@@ -353,6 +352,19 @@ detect_start_script() {
     echo "----------------------------------------"
     echo
     
+    # Check for existing app.sh first
+    if [[ -f "$APP_PATH/app.sh" ]]; then
+        print_success "Found existing app.sh: $APP_PATH/app.sh"
+        read -p "Use existing app.sh? (y/n) [default: y]: " USE_EXISTING
+        if [[ "$USE_EXISTING" =~ ^[Yy]$ ]] || [[ -z "$USE_EXISTING" ]]; then
+            START_SCRIPT="$APP_PATH/app.sh"
+            SCRIPT_TYPE="shell"
+            print_success "Will use existing app.sh"
+            return 0
+        fi
+    fi
+    
+    # Auto-detect common Python files
     for script in "${COMMON_SCRIPTS[@]}"; do
         if [[ -f "$APP_PATH/$script" ]]; then
             START_SCRIPT="$APP_PATH/$script"
@@ -481,6 +493,7 @@ configure_virtualenv() {
 }
 
 configure_working_directory() {
+    echo
     print_status "Working directory configuration"
     
     read -p "Use custom working directory? (y/n) [default: n]: " USE_CUSTOM_WD
@@ -552,11 +565,7 @@ configure_logging() {
     mkdir -p "$LOG_DIR"
     chown -R "$SERVICE_USER:$SERVICE_GROUP" "$LOG_DIR" 2>/dev/null || true
     
-    ACCESS_LOG="$LOG_DIR/access.log"
-    ERROR_LOG="$LOG_DIR/error.log"
-    
-    print_success "Access log: $ACCESS_LOG"
-    print_success "Error log: $ERROR_LOG"
+    print_success "Log directory: $LOG_DIR"
 }
 
 create_service_file() {
@@ -575,6 +584,7 @@ Type=simple
 User=${SERVICE_USER}
 Group=${SERVICE_GROUP}
 WorkingDirectory=${WORKING_DIR}
+Environment="PYTHONUNBUFFERED=1"
 EOF
 
     if [[ -n "$VENV_PATH" ]]; then
@@ -584,12 +594,12 @@ EOF
     fi
     
     cat >> "$SERVICE_FILE" << EOF
-Environment="PYTHONUNBUFFERED=1"
 
 ExecStart=${START_SCRIPT}
 Restart=always
 RestartSec=5
 
+# Security hardening
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
