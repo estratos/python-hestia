@@ -265,35 +265,115 @@ confirm_or_change_path() {
     local suggested_path="$1"
     
     echo
-    print_prompt "Application path: $suggested_path"
-    echo "Options:"
-    echo "  - Enter 'y' to accept this path"
-    echo "  - Enter 'c' to change to a custom path"
-    echo "  - Enter 's' to scan for existing Python applications"
+    echo "================================================================================"
+    print_prompt "Application Path Configuration"
+    echo "================================================================================"
     echo
+    print_status "Suggested application path:"
+    echo "  $suggested_path"
+    echo
+    print_status "Options:"
+    echo "  1) Accept this path and continue"
+    echo "  2) Enter a different custom path"
+    echo "  3) Scan for existing Python applications in this domain"
+    echo "  4) Enter a path that exists but is not in the standard location"
+    echo "  5) Use the default path and override any existing content"
+    echo
+    read -p "Enter your choice (1-5): " PATH_OPTION
     
-    read -p "Your choice (y/c/s): " PATH_CHOICE
-    
-    case $PATH_CHOICE in
-        y|Y)
+    case $PATH_OPTION in
+        1)
             APP_PATH="$suggested_path"
             print_success "Using application path: $APP_PATH"
             SERVICE_NAME="${SELECTED_DOMAIN}_python"
+            
+            # Check if path exists
+            if [[ -d "$APP_PATH" ]]; then
+                print_status "Path exists. Contents:"
+                ls -la "$APP_PATH" | head -10
+                echo
+                read -p "Continue with this existing directory? (y/n): " -n 1 -r
+                echo
+                if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                    print_status "Returning to path options..."
+                    confirm_or_change_path "$suggested_path"
+                    return $?
+                fi
+            else
+                print_warning "Path does not exist"
+                read -p "Create directory? (y/n): " -n 1 -r
+                echo
+                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                    mkdir -p "$APP_PATH"
+                    if [[ -n "$SELECTED_USER" ]]; then
+                        chown "$SELECTED_USER:$SELECTED_USER" "$APP_PATH"
+                    fi
+                    print_success "Created directory: $APP_PATH"
+                else
+                    print_error "Cannot proceed without directory"
+                    confirm_or_change_path "$suggested_path"
+                    return $?
+                fi
+            fi
             return 0
             ;;
-        c|C)
+        2)
             select_custom_path
             return $?
             ;;
-        s|S)
+        3)
             scan_for_applications
             return $?
             ;;
-        *)
-            print_error "Invalid choice, using default path"
+        4)
+            echo
+            print_prompt "Enter the absolute path to your existing application:"
+            read -p "Path: " EXISTING_PATH
+            if [[ -z "$EXISTING_PATH" ]]; then
+                print_error "Path cannot be empty"
+                confirm_or_change_path "$suggested_path"
+                return $?
+            fi
+            if [[ ! -d "$EXISTING_PATH" ]]; then
+                print_error "Path does not exist: $EXISTING_PATH"
+                confirm_or_change_path "$suggested_path"
+                return $?
+            fi
+            APP_PATH="$EXISTING_PATH"
+            SERVICE_NAME=$(basename "$EXISTING_PATH" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g')
+            print_success "Using existing path: $APP_PATH"
+            return 0
+            ;;
+        5)
             APP_PATH="$suggested_path"
             SERVICE_NAME="${SELECTED_DOMAIN}_python"
+            print_warning "Using default path and will override any existing content"
+            print_status "Path: $APP_PATH"
+            
+            # Create directory if it doesn't exist
+            mkdir -p "$APP_PATH"
+            if [[ -n "$SELECTED_USER" ]]; then
+                chown "$SELECTED_USER:$SELECTED_USER" "$APP_PATH"
+            fi
+            
+            # Backup existing content if any
+            if [[ -d "$APP_PATH" ]] && [[ -n "$(ls -A "$APP_PATH" 2>/dev/null)" ]]; then
+                BACKUP_PATH="${APP_PATH}_backup_$(date +%Y%m%d_%H%M%S)"
+                print_warning "Directory contains files. Creating backup at: $BACKUP_PATH"
+                mv "$APP_PATH" "$BACKUP_PATH"
+                mkdir -p "$APP_PATH"
+                if [[ -n "$SELECTED_USER" ]]; then
+                    chown "$SELECTED_USER:$SELECTED_USER" "$APP_PATH"
+                fi
+            fi
+            
+            print_success "Directory ready: $APP_PATH"
             return 0
+            ;;
+        *)
+            print_error "Invalid option. Please choose 1-5."
+            confirm_or_change_path "$suggested_path"
+            return $?
             ;;
     esac
 }
