@@ -1,6 +1,6 @@
 #!/bin/bash
 # Script para crear servicio systemd para Python app en HestiaCP
-# Específico para: pandoraapi.machovaquero.com con run.py
+# 
 
 set -e
 
