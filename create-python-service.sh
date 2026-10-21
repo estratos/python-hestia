@@ -287,7 +287,6 @@ confirm_or_change_path() {
             print_success "Using application path: $APP_PATH"
             SERVICE_NAME="${SELECTED_DOMAIN}_python"
             
-            # Check if path exists
             if [[ -d "$APP_PATH" ]]; then
                 print_status "Path exists. Contents:"
                 ls -la "$APP_PATH" | head -10
@@ -350,13 +349,11 @@ confirm_or_change_path() {
             print_warning "Using default path and will override any existing content"
             print_status "Path: $APP_PATH"
             
-            # Create directory if it doesn't exist
             mkdir -p "$APP_PATH"
             if [[ -n "$SELECTED_USER" ]]; then
                 chown "$SELECTED_USER:$SELECTED_USER" "$APP_PATH"
             fi
             
-            # Backup existing content if any
             if [[ -d "$APP_PATH" ]] && [[ -n "$(ls -A "$APP_PATH" 2>/dev/null)" ]]; then
                 BACKUP_PATH="${APP_PATH}_backup_$(date +%Y%m%d_%H%M%S)"
                 print_warning "Directory contains files. Creating backup at: $BACKUP_PATH"
@@ -423,8 +420,10 @@ detect_start_script() {
     print_status "Detecting Python application files..."
     
     START_SCRIPT=""
+    SCRIPT_TYPE=""
     
-    COMMON_SCRIPTS=("app.py" "run.py" "main.py" "application.py" "wsgi.py" "manage.py" "start.py" "server.py")
+    # Lista común de scripts incluyendo run.py
+    COMMON_SCRIPTS=("run.py" "app.py" "main.py" "application.py" "wsgi.py" "manage.py" "start.py" "server.py")
     
     echo "Files found in $APP_PATH:"
     echo "----------------------------------------"
@@ -432,7 +431,7 @@ detect_start_script() {
     echo "----------------------------------------"
     echo
     
-    # Check for existing app.sh first
+    # Verificar si existe app.sh
     if [[ -f "$APP_PATH/app.sh" ]]; then
         print_success "Found existing app.sh: $APP_PATH/app.sh"
         read -p "Use existing app.sh? (y/n) [default: y]: " USE_EXISTING
@@ -444,11 +443,15 @@ detect_start_script() {
         fi
     fi
     
-    # Auto-detect common Python files
+    # Buscar scripts comunes (run.py tiene prioridad)
     for script in "${COMMON_SCRIPTS[@]}"; do
         if [[ -f "$APP_PATH/$script" ]]; then
             START_SCRIPT="$APP_PATH/$script"
-            print_success "Detected: $START_SCRIPT"
+            if [[ "$script" == "run.py" ]]; then
+                print_success "✅ Detected preferred startup script: $START_SCRIPT"
+            else
+                print_success "Detected: $START_SCRIPT"
+            fi
             break
         fi
     done
@@ -473,6 +476,7 @@ detect_start_script() {
         START_SCRIPT="$USER_SCRIPT"
     fi
     
+    # Determinar tipo de script
     if [[ -f "$START_SCRIPT" ]]; then
         if [[ "$START_SCRIPT" == *.sh ]]; then
             SCRIPT_TYPE="shell"
@@ -480,6 +484,42 @@ detect_start_script() {
         elif [[ "$START_SCRIPT" == *.py ]]; then
             SCRIPT_TYPE="python"
             print_success "Python script detected: $START_SCRIPT"
+            
+            # Preguntar si quieren usar virtualenv para run.py
+            if [[ "$START_SCRIPT" == *"run.py" ]]; then
+                echo
+                print_prompt "For run.py, do you want to:"
+                echo "  1) Run directly with python3"
+                echo "  2) Use a virtual environment (recommended)"
+                read -p "Choice (1 or 2) [default: 2]: " RUN_CHOICE
+                
+                if [[ "$RUN_CHOICE" == "1" ]]; then
+                    PYTHON_CMD="/usr/bin/python3"
+                    VENV_PATH=""
+                else
+                    # Detectar virtualenv
+                    if [[ -d "$APP_PATH/venv" ]]; then
+                        VENV_PATH="$APP_PATH/venv"
+                    elif [[ -d "$APP_PATH/.venv" ]]; then
+                        VENV_PATH="$APP_PATH/.venv"
+                    elif [[ -d "$APP_PATH/env" ]]; then
+                        VENV_PATH="$APP_PATH/env"
+                    else
+                        read -p "Enter virtualenv path (or press Enter to use system Python): " VENV_PATH
+                        if [[ -z "$VENV_PATH" ]]; then
+                            PYTHON_CMD="/usr/bin/python3"
+                        fi
+                    fi
+                    
+                    if [[ -n "$VENV_PATH" ]] && [[ -d "$VENV_PATH" ]]; then
+                        PYTHON_CMD="$VENV_PATH/bin/python"
+                        print_success "Will use virtualenv: $VENV_PATH"
+                    else
+                        PYTHON_CMD="/usr/bin/python3"
+                        print_status "Using system Python"
+                    fi
+                fi
+            fi
         else
             SCRIPT_TYPE="custom"
             print_success "Custom script: $START_SCRIPT"
@@ -510,6 +550,13 @@ configure_port() {
 }
 
 configure_virtualenv() {
+    # Si ya se configuró en detect_start_script para run.py, saltar
+    if [[ -n "$PYTHON_CMD" ]] && [[ "$PYTHON_CMD" != "/usr/bin/python3" ]]; then
+        print_success "Virtual environment already configured: $VENV_PATH"
+        USE_VENV="y"
+        return 0
+    fi
+    
     echo
     print_prompt "Does your application use a virtual environment?"
     read -p "Use virtual environment? (y/n) [default: n]: " USE_VENV
@@ -532,8 +579,10 @@ configure_virtualenv() {
             read -p "Use this virtual environment? (y/n) [default: y]: " USE_DETECTED
             if [[ ! $USE_DETECTED =~ ^[Nn]$ ]]; then
                 print_success "Using detected virtual environment"
+                PYTHON_CMD="$VENV_PATH/bin/python"
             else
                 VENV_PATH=""
+                PYTHON_CMD="/usr/bin/python3"
             fi
         fi
         
@@ -542,6 +591,9 @@ configure_virtualenv() {
             if [[ -z "$VENV_PATH" ]]; then
                 print_warning "No virtual environment specified, using system Python"
                 USE_VENV="n"
+                PYTHON_CMD="/usr/bin/python3"
+            else
+                PYTHON_CMD="$VENV_PATH/bin/python"
             fi
         fi
         
@@ -556,12 +608,16 @@ configure_virtualenv() {
                         chown -R "$SELECTED_USER:$SELECTED_USER" "$VENV_PATH"
                     fi
                     print_success "Created virtual environment: $VENV_PATH"
+                    PYTHON_CMD="$VENV_PATH/bin/python"
                 else
                     print_warning "Continuing without virtual environment"
                     USE_VENV="n"
+                    PYTHON_CMD="/usr/bin/python3"
                 fi
             fi
         fi
+    else
+        PYTHON_CMD="/usr/bin/python3"
     fi
     
     if [[ "$USE_VENV" =~ ^[Yy]$ ]]; then
@@ -673,8 +729,27 @@ Environment="PATH=${VENV_PATH}/bin:/usr/local/bin:/usr/bin:/bin"
 EOF
     fi
     
-    cat >> "$SERVICE_FILE" << EOF
+    # Construir el comando ExecStart correctamente
+    if [[ "$SCRIPT_TYPE" == "python" ]] && [[ -n "$PYTHON_CMD" ]]; then
+        # Para scripts Python con virtualenv o Python específico
+        cat >> "$SERVICE_FILE" << EOF
+ExecStart=${PYTHON_CMD} ${START_SCRIPT}
+Restart=always
+RestartSec=5
 
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+#ProtectHome=yes
+ReadWritePaths=${WORKING_DIR} ${LOG_DIR}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    else
+        # Para shell scripts o comandos directos
+        cat >> "$SERVICE_FILE" << EOF
 ExecStart=${START_SCRIPT}
 Restart=always
 RestartSec=5
@@ -689,6 +764,7 @@ ReadWritePaths=${WORKING_DIR} ${LOG_DIR}
 [Install]
 WantedBy=multi-user.target
 EOF
+    fi
     
     print_success "Created service file: $SERVICE_FILE"
     print_success "Service name: ${SERVICE_NAME}"
@@ -704,6 +780,9 @@ show_service_details() {
     echo "  Name: ${SERVICE_NAME}.service"
     echo "  Working Directory: $WORKING_DIR"
     echo "  Startup Command: $START_SCRIPT"
+    if [[ -n "$PYTHON_CMD" ]] && [[ "$SCRIPT_TYPE" == "python" ]]; then
+        echo "  Python Command: $PYTHON_CMD"
+    fi
     echo "  Port: $PORT"
     [[ -n "$VENV_PATH" ]] && echo "  Virtual Environment: $VENV_PATH"
     echo "  User: $SERVICE_USER"
@@ -740,6 +819,9 @@ confirm_and_create() {
     echo "Application Path: $APP_PATH"
     echo "Working Directory: $WORKING_DIR"
     echo "Startup Command: $START_SCRIPT"
+    if [[ -n "$PYTHON_CMD" ]] && [[ "$SCRIPT_TYPE" == "python" ]]; then
+        echo "Python Command: $PYTHON_CMD"
+    fi
     echo "Port: $PORT"
     [[ -n "$VENV_PATH" ]] && echo "Virtual Environment: $VENV_PATH"
     echo "Service User: $SERVICE_USER"
