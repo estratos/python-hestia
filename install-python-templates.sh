@@ -21,6 +21,13 @@ TPL_URL="https://raw.githubusercontent.com/estratos/python-hestia/refs/heads/mai
 DEFAULT_PORT="8000"
 INSTALL_DIR="/usr/local/hestia/data/templates/web/nginx"
 
+# When the installer runs from a git checkout, use the local templates so the
+# port rewrite and template fixes match the code being tested. When it runs
+# standalone (downloaded with wget), fall back to the GitHub copies.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCAL_TPL="$SCRIPT_DIR/web/nginx/python-app.tpl"
+LOCAL_STPL="$SCRIPT_DIR/web/nginx/python-app.stpl"
+
 print_status() {
     echo -e "${BLUE}[INFO]${NC} $1"
 }
@@ -167,11 +174,20 @@ confirm_file_operations() {
 }
 
 download_templates() {
-    print_status "Downloading latest templates from GitHub..."
-    
-    # Create temporary directory for downloaded files
+    # Create temporary directory for the working copies
     TEMP_DIR=$(mktemp -d)
     cd "$TEMP_DIR"
+
+    # Prefer the templates from this checkout when available (repo mode)
+    if [[ -s "$LOCAL_STPL" ]] && [[ -s "$LOCAL_TPL" ]]; then
+        print_status "Using local templates from $SCRIPT_DIR/web/nginx"
+        cp "$LOCAL_STPL" python-app.stpl
+        cp "$LOCAL_TPL" python-app.tpl
+        print_success "Using local python-app.stpl / python-app.tpl"
+        return 0
+    fi
+
+    print_status "Downloading latest templates from GitHub..."
     
     # Download the stpl template
     print_status "Downloading python-app.stpl..."
@@ -216,22 +232,21 @@ modify_templates() {
     grep -n "proxy_pass" python-app.stpl | head -2
     echo
     
-    # Modify stpl template (SSL version)
+    # Rewrite every backend reference (location /, /health, etc.), not only
+    # the one ending in ";" -- otherwise /health keeps pointing at 8000.
     if [[ -f "python-app.stpl" ]]; then
-        sed -i "s|proxy_pass http://127.0.0.1:8000;|proxy_pass http://127.0.0.1:$PORT;|g" python-app.stpl
-        sed -i "s|proxy_pass https://127.0.0.1:8000:/|proxy_pass http://127.0.0.1:$PORT:/|g" python-app.stpl
+        sed -i "s|127.0.0.1:8000|127.0.0.1:$PORT|g" python-app.stpl
         print_success "Modified python-app.stpl for port $PORT"
         
         # Show new configuration
         echo "New configuration:"
-        grep -n "proxy_pass" python-app.stpl | head -2
+        grep -n "proxy_pass" python-app.stpl | head -5
         echo
     fi
     
     # Modify tpl template (HTTP version)
     if [[ -f "python-app.tpl" ]]; then
-        sed -i "s|proxy_pass http://127.0.0.1:8000;|proxy_pass http://127.0.0.1:$PORT;|g" python-app.tpl
-        sed -i "s|proxy_pass http://127.0.0.1:8000:/|proxy_pass http://127.0.0.1:$PORT:/|g" python-app.tpl
+        sed -i "s|127.0.0.1:8000|127.0.0.1:$PORT|g" python-app.tpl
         print_success "Modified python-app.tpl for port $PORT"
     fi
 }
@@ -336,6 +351,12 @@ verify_installation() {
             print_success "Port configuration verified: $PORT"
         else
             print_warning "Port configuration verification failed. Please check manually."
+        fi
+
+        # Catch leftovers such as /health when a custom port was chosen
+        if [[ "$PORT" != "8000" ]] && \
+           grep -q "127.0.0.1:8000" "$INSTALL_DIR/python-app.stpl" "$INSTALL_DIR/python-app.tpl"; then
+            print_warning "Some 127.0.0.1:8000 references remain; check proxy_pass lines manually."
         fi
     else
         print_error "Verification failed: One or both template files are missing"
