@@ -523,6 +523,12 @@ sudo rm /etc/systemd/system/domain_python.service
 sudo systemctl daemon-reload
 ```
 
+Or use the helper, which lists the services created by this script:
+
+```bash
+sudo ./remove-python-service.sh
+```
+
 ## Script Options
 
 - Fully interactive
