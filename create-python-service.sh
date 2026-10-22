@@ -704,6 +704,99 @@ configure_logging() {
     print_success "Log directory: $LOG_DIR"
 }
 
+configure_entrypoint() {
+    EXEC_START=""
+    local framework=""
+    local app_object=""
+    local module=""
+    local entry=""
+
+    # Shell scripts: run through bash so the exec bit is not required.
+    if [[ "$SCRIPT_TYPE" == "shell" ]] && [[ -f "$START_SCRIPT" ]]; then
+        EXEC_START="/bin/bash $START_SCRIPT"
+        return 0
+    fi
+
+    # Non-Python startup (custom command): keep it as provided.
+    if [[ "$SCRIPT_TYPE" != "python" ]] || [[ ! -f "$START_SCRIPT" ]]; then
+        EXEC_START="$START_SCRIPT"
+        return 0
+    fi
+
+    # If the script starts the server itself, `python script.py` is correct.
+    if grep -qE '(^|[^A-Za-z_])(uvicorn\.run|app\.run|run_simple|waitress\.serve)[[:space:]]*\(' "$START_SCRIPT"; then
+        EXEC_START="${PYTHON_CMD:-python3} $START_SCRIPT"
+        print_success "The script starts the server itself: $EXEC_START"
+        return 0
+    fi
+
+    if grep -qE '(^|[^A-Za-z_])FastAPI[[:space:]]*\(' "$START_SCRIPT"; then
+        framework="fastapi"
+    elif grep -qE '(^|[^A-Za-z_])Flask[[:space:]]*\(' "$START_SCRIPT"; then
+        framework="flask"
+    fi
+
+    app_object=$(grep -oE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[[:space:]]*(FastAPI|Flask)[[:space:]]*\(' "$START_SCRIPT" 2>/dev/null | head -n1 | sed -E 's/^[[:space:]]*//; s/[[:space:]]*=.*//' || true)
+
+    if [[ -z "$app_object" ]]; then
+        if [[ "$(basename "$START_SCRIPT")" == "wsgi.py" ]]; then
+            app_object="application"
+            framework="wsgi"
+        else
+            app_object="app"
+        fi
+    fi
+
+    module=$(basename "$START_SCRIPT" .py)
+
+    if [[ -z "$framework" ]]; then
+        print_warning "Could not detect FastAPI or Flask in $START_SCRIPT"
+        echo "If this is an ASGI/WSGI app, enter its entrypoint (module:object)."
+        read -p "Entrypoint [default: ${module}:${app_object}]: " USER_ENTRY
+        if [[ -n "$USER_ENTRY" ]]; then
+            module="${USER_ENTRY%%:*}"
+            app_object="${USER_ENTRY##*:}"
+            framework="asgi"
+        else
+            EXEC_START="${PYTHON_CMD:-python3} $START_SCRIPT"
+            print_warning "Keeping: $EXEC_START (the script must block; otherwise systemd will restart it)"
+            return 0
+        fi
+    fi
+
+    entry="${module}:${app_object}"
+
+    if [[ "$framework" == "flask" ]] || [[ "$framework" == "wsgi" ]]; then
+        if [[ -n "$VENV_PATH" ]] && [[ -x "$VENV_PATH/bin/gunicorn" ]]; then
+            EXEC_START="$VENV_PATH/bin/gunicorn --bind 127.0.0.1:${PORT} ${entry}"
+        elif [[ -n "$VENV_PATH" ]] && "$VENV_PATH/bin/python" -c "import gunicorn" >/dev/null 2>&1; then
+            EXEC_START="$VENV_PATH/bin/python -m gunicorn --bind 127.0.0.1:${PORT} ${entry}"
+        elif command -v gunicorn >/dev/null 2>&1; then
+            EXEC_START="$(command -v gunicorn) --bind 127.0.0.1:${PORT} ${entry}"
+        else
+            print_warning "gunicorn not found. Install it in the venv: ${VENV_PATH:+$VENV_PATH/bin/}pip install gunicorn"
+            EXEC_START="${PYTHON_CMD:-python3} $START_SCRIPT"
+        fi
+    else
+        if [[ -n "$VENV_PATH" ]] && [[ -x "$VENV_PATH/bin/uvicorn" ]]; then
+            EXEC_START="$VENV_PATH/bin/uvicorn ${entry} --host 127.0.0.1 --port ${PORT}"
+        elif [[ -n "$VENV_PATH" ]] && "$VENV_PATH/bin/python" -c "import uvicorn" >/dev/null 2>&1; then
+            EXEC_START="$VENV_PATH/bin/python -m uvicorn ${entry} --host 127.0.0.1 --port ${PORT}"
+        elif [[ -n "$VENV_PATH" ]] && [[ -x "$VENV_PATH/bin/gunicorn" ]]; then
+            EXEC_START="$VENV_PATH/bin/gunicorn -k uvicorn.workers.UvicornWorker --bind 127.0.0.1:${PORT} ${entry}"
+        elif command -v uvicorn >/dev/null 2>&1; then
+            EXEC_START="$(command -v uvicorn) ${entry} --host 127.0.0.1 --port ${PORT}"
+        elif command -v gunicorn >/dev/null 2>&1; then
+            EXEC_START="$(command -v gunicorn) -k uvicorn.workers.UvicornWorker --bind 127.0.0.1:${PORT} ${entry}"
+        else
+            print_warning "uvicorn/gunicorn not found. Install one in the venv: ${VENV_PATH:+$VENV_PATH/bin/}pip install uvicorn"
+            EXEC_START="${PYTHON_CMD:-python3} $START_SCRIPT"
+        fi
+    fi
+
+    print_success "ExecStart: $EXEC_START"
+}
+
 create_service_file() {
     SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
     
@@ -714,6 +807,8 @@ create_service_file() {
 [Unit]
 Description=Python Application for ${SERVICE_NAME}
 After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -729,12 +824,11 @@ Environment="PATH=${VENV_PATH}/bin:/usr/local/bin:/usr/bin:/bin"
 EOF
     fi
     
-    # Construir el comando ExecStart correctamente
-    if [[ "$SCRIPT_TYPE" == "python" ]] && [[ -n "$PYTHON_CMD" ]]; then
-        # Para scripts Python con virtualenv o Python específico
-        cat >> "$SERVICE_FILE" << EOF
-ExecStart=${PYTHON_CMD} ${START_SCRIPT}
-Restart=always
+    cat >> "$SERVICE_FILE" << EOF
+
+Environment="PORT=${PORT}"
+ExecStart=${EXEC_START}
+Restart=on-failure
 RestartSec=5
 
 # Security hardening
@@ -747,24 +841,6 @@ ReadWritePaths=${WORKING_DIR} ${LOG_DIR}
 [Install]
 WantedBy=multi-user.target
 EOF
-    else
-        # Para shell scripts o comandos directos
-        cat >> "$SERVICE_FILE" << EOF
-ExecStart=${START_SCRIPT}
-Restart=always
-RestartSec=5
-
-# Security hardening
-NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectSystem=strict
-#ProtectHome=yes
-ReadWritePaths=${WORKING_DIR} ${LOG_DIR}
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    fi
     
     print_success "Created service file: $SERVICE_FILE"
     print_success "Service name: ${SERVICE_NAME}"
@@ -779,10 +855,8 @@ show_service_details() {
     echo "Service Details:"
     echo "  Name: ${SERVICE_NAME}.service"
     echo "  Working Directory: $WORKING_DIR"
-    echo "  Startup Command: $START_SCRIPT"
-    if [[ -n "$PYTHON_CMD" ]] && [[ "$SCRIPT_TYPE" == "python" ]]; then
-        echo "  Python Command: $PYTHON_CMD"
-    fi
+    echo "  Startup Script: $START_SCRIPT"
+    echo "  ExecStart: $EXEC_START"
     echo "  Port: $PORT"
     [[ -n "$VENV_PATH" ]] && echo "  Virtual Environment: $VENV_PATH"
     echo "  User: $SERVICE_USER"
@@ -818,10 +892,8 @@ confirm_and_create() {
     echo "Service Name: ${SERVICE_NAME}"
     echo "Application Path: $APP_PATH"
     echo "Working Directory: $WORKING_DIR"
-    echo "Startup Command: $START_SCRIPT"
-    if [[ -n "$PYTHON_CMD" ]] && [[ "$SCRIPT_TYPE" == "python" ]]; then
-        echo "Python Command: $PYTHON_CMD"
-    fi
+    echo "Startup Script: $START_SCRIPT"
+    echo "ExecStart: $EXEC_START"
     echo "Port: $PORT"
     [[ -n "$VENV_PATH" ]] && echo "Virtual Environment: $VENV_PATH"
     echo "Service User: $SERVICE_USER"
@@ -893,6 +965,7 @@ main() {
     configure_working_directory
     configure_service_user
     configure_logging
+    configure_entrypoint
     confirm_and_create
 }
 
