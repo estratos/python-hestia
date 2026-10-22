@@ -869,11 +869,13 @@ show_service_details() {
     echo "  Status:  systemctl status ${SERVICE_NAME}"
     echo "  Logs:    journalctl -u ${SERVICE_NAME} -f"
     echo
-    echo "To enable auto-start on boot:"
-    echo "  systemctl enable ${SERVICE_NAME}"
-    echo
-    echo "To disable auto-start on boot:"
-    echo "  systemctl disable ${SERVICE_NAME}"
+    if [[ "${ENABLED_ON_BOOT:-no}" == "yes" ]]; then
+        echo "Auto-start on boot: enabled"
+        echo "  Disable: systemctl disable ${SERVICE_NAME}"
+    else
+        echo "Auto-start on boot: disabled"
+        echo "  Enable:  systemctl enable ${SERVICE_NAME}"
+    fi
     echo
     echo "Nginx Template:"
     echo "  Make sure to select 'python-app' template in HestiaCP for your domain"
@@ -913,27 +915,41 @@ confirm_and_create() {
     
     create_service_file
     systemctl daemon-reload
-    
+
+    # Enable on boot BEFORE starting. The old prompt was after
+    # "systemctl status", which returns non-zero for a failed/activating
+    # unit and aborted the script under `set -e` before asking.
+    echo
+    read -p "Enable service on boot? (Y/n): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+        if systemctl enable "${SERVICE_NAME}" >/dev/null 2>&1; then
+            ENABLED_ON_BOOT="yes"
+            print_success "Service enabled on boot"
+        else
+            print_warning "Could not enable ${SERVICE_NAME} on boot"
+        fi
+    else
+        ENABLED_ON_BOOT="no"
+        print_status "Service will not start on boot"
+    fi
+
     echo
     read -p "Start service now? (y/n): " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        systemctl start "${SERVICE_NAME}"
-        print_success "Service started"
-        
+        if systemctl start "${SERVICE_NAME}"; then
+            print_success "Service started"
+        else
+            print_error "Service failed to start"
+        fi
+
         sleep 2
-        systemctl status "${SERVICE_NAME}" --no-pager
+        systemctl status "${SERVICE_NAME}" --no-pager || true
     else
         print_status "Service created but not started"
     fi
-    
-    read -p "Enable service on boot? (y/n): " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        systemctl enable "${SERVICE_NAME}"
-        print_success "Service enabled on boot"
-    fi
-    
+
     show_service_details
 }
 
