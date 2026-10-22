@@ -311,6 +311,7 @@ This script creates a systemd service that manages your Python application as a 
 - Custom Path Support: Works with any absolute path, not just Hestia domains
 - Automatic Detection: Identifies common Python application files (app.py, run.py, main.py, etc.)
 - Virtual Environment Support: Detects and configures existing virtual environments or creates new ones
+- Runner Script: Generates `<app>/run.sh`, which finds or creates the venv and execs uvicorn/gunicorn
 - Port Configuration: Interactive port selection with validation
 - User Management: Choose which system user runs the service
 - Logging Setup: Automatic log directory creation with proper permissions
@@ -320,7 +321,7 @@ This script creates a systemd service that manages your Python application as a 
 ## Requirements
 
 - HestiaCP installed (optional, for domain integration)
-- Python 3.6+ installed
+- Python 3.8+ installed
 - Root or sudo access
 - systemd (standard on Ubuntu 22.04/24.04 and Debian 11/12)
 
